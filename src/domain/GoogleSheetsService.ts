@@ -1,0 +1,3274 @@
+import {
+  Machine,
+  Nurse,
+  ShiftAssignment,
+  SHIFT_TYPE_INFO,
+  MachineCategory,
+  MachineStatus,
+  NurseRole,
+  Doctor,
+  DoctorShiftDuty,
+  SpecialDutyOption,
+  DEFAULT_SPECIAL_DUTY_OPTIONS,
+  parseSpecialDuties,
+  formatSpecialDuties,
+  SpecialTask,
+  UserAccount,
+  SPECIAL_TASK_DEFINITIONS,
+  SpecialTaskCategory,
+} from '../types';
+import { sortNursesByShiftScheduleOrder } from '../utils/scheduler';
+
+export interface PartialSyncTargets {
+  matrixSchedule?: boolean;      // Matrik Jadwal Perawat (Tab "Matrik Jadwal Perawat")
+  doctorDuties?: boolean;        // Matrik Jadwal Dokter (Tab "Matrik Jadwal Dokter")
+  machineAssignments?: boolean;  // Data alokasi mesin (Tab "Data alokasi mesin")
+  specialTasks?: boolean;        // Tugas Khusus (Tab "Tugas Khusus")
+  nursesMaster?: boolean;        // Master Perawat (Tab "Master Perawat")
+  machinesMaster?: boolean;      // Master Mesin (Tab "Master Mesin" urut Denah Ruangan)
+  doctorsMaster?: boolean;       // Master Dokter (Tab "Master Dokter")
+  specialDutiesMaster?: boolean; // Master Opsi Tugas Khusus (Tab "Master Tugas Khusus")
+}
+
+/**
+ * Helper to determine room layout sort rank for HD machines according to denah ruangan.
+ * Sequence: Area A (A01..A12) -> Area B (B01..B09) -> Area C (C01..C08) -> Area D (D01..D03) -> Area E (E01..E02) -> Area F (F01..F02) -> Ruang Isolasi (ISO 01..ISO 04)
+ */
+export function getMachineDenahSortRank(code?: string, bay?: string): number {
+  const c = String(code || '').toUpperCase().trim();
+  const b = String(bay || '').toUpperCase().trim();
+
+  // 1. Area A (A01 - A12)
+  const mA = c.match(/^A-?(\d+)/);
+  if (mA) return 100 + parseInt(mA[1], 10);
+  if (b.includes('AREA A')) return 150;
+
+  // 2. Area B (B01 - B09)
+  const mB = c.match(/^B-?(\d+)/);
+  if (mB) return 200 + parseInt(mB[1], 10);
+  if (b.includes('AREA B')) return 250;
+
+  // 3. Area C (C01 - C08)
+  const mC = c.match(/^C-?(\d+)/);
+  if (mC) return 300 + parseInt(mC[1], 10);
+  if (b.includes('AREA C')) return 350;
+
+  // 4. Area D (D01 - D03)
+  const mD = c.match(/^D-?(\d+)/);
+  if (mD) return 400 + parseInt(mD[1], 10);
+  if (b.includes('AREA D')) return 450;
+
+  // 5. Area E (E01 - E02)
+  const mE = c.match(/^E-?(\d+)/);
+  if (mE) return 500 + parseInt(mE[1], 10);
+  if (b.includes('AREA E')) return 550;
+
+  // 6. Area F (F01 - F02)
+  const mF = c.match(/^F-?(\d+)/);
+  if (mF) return 600 + parseInt(mF[1], 10);
+  if (b.includes('AREA F')) return 650;
+
+  // 7. Ruang Isolasi (ISO 01 - ISO 04)
+  const mIso = c.match(/^ISO[-\s]?(\d+)/);
+  if (mIso) return 700 + parseInt(mIso[1], 10);
+  if (b.includes('ISOLASI')) return 750;
+
+  return 900;
+}
+
+/**
+ * Helper to determine Special Task priority rank:
+ * 1. PJ shif (PJ Shif / Katim)
+ * 2. BHP (Pengelolaan BHP / Logistik Bahan Habis Pakai)
+ * 3. Farmasi Logistik (Pengelolaan Farmasi & Logistik Obat)
+ * 4. Natrium RO (Pengawasan Mesin RO & Konsentrat Natrium/Acid)
+ * 5. CITO (Tim Siaga CITO / Emergency HD)
+ * 99. Lainnya
+ */
+export function getSpecialTaskCategoryRank(titleOrCategory?: string): number {
+  const t = String(titleOrCategory || '').toLowerCase().trim();
+  if (t.includes('pj') || t.includes('katim') || t.includes('ketua tim')) return 1;
+  if (t.includes('bhp') || t.includes('habis pakai')) return 2;
+  if (t.includes('farmasi') || t.includes('logistik') || t.includes('obat')) return 3;
+  if (t.includes('natrium') || t.includes('ro') || t.includes('water')) return 4;
+  if (t.includes('cito') || t.includes('emergency') || t.includes('darurat')) return 5;
+  return 99;
+}
+
+export const DEFAULT_PARTIAL_SYNC_TARGETS: Required<PartialSyncTargets> = {
+  matrixSchedule: true,
+  doctorDuties: true,
+  machineAssignments: true,
+  specialTasks: true,
+  nursesMaster: true,
+  machinesMaster: true,
+  doctorsMaster: true,
+  specialDutiesMaster: true,
+};
+
+export interface SyncResult {
+  isSuccess: boolean;
+  message: string;
+  rowsSynced?: number;
+}
+
+export interface GoogleSheetsSyncAllResult {
+  isSuccess: boolean;
+  message: string;
+  nursesCount?: number;
+  machinesCount?: number;
+  assignmentsCount?: number;
+  doctorsCount?: number;
+  doctorDutiesCount?: number;
+  baysCount?: number;
+  specialDutiesCount?: number;
+}
+
+export interface GoogleSheetsFetchResult {
+  isSuccess: boolean;
+  message: string;
+  nurses: Nurse[];
+  machines: Machine[];
+  bays?: string[];
+  assignments: ShiftAssignment[];
+  doctors?: Doctor[];
+  doctorDuties?: Record<string, DoctorShiftDuty>;
+  specialDutyOptions?: SpecialDutyOption[];
+}
+
+export class GoogleSheetsService {
+  /**
+   * Generates a calendar matrix matching the Excel (.xlsx) format:
+   * Columns: No, Nama Perawat, NIP, Peran, 1, 2, ..., 31, Pagi (P), Siang (S), Libur (L), Cuti (C), Sakit (SK), Total Jaga
+   */
+  static buildScheduleMatrix(
+    monthString: string,
+    nurses: Nurse[],
+    assignments: ShiftAssignment[]
+  ) {
+    const parts = monthString.split('-');
+    const year = parseInt(parts[0], 10) || new Date().getFullYear();
+    const month = parseInt(parts[1], 10) || (new Date().getMonth() + 1);
+    const daysInMonth = new Date(year, month, 0).getDate();
+
+    const indonesianMonths = [
+      'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
+      'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'
+    ];
+    const monthName = indonesianMonths[month - 1] || `Bulan ${month}`;
+    const formattedMonthTitle = `${monthName} ${year}`;
+
+    const filteredNurses = nurses.filter(
+      (n) => n.isActive && !n.name.toLowerCase().includes('admin') && (n as any).role !== 'ADMIN' && (n as any).role !== 'admin'
+    );
+    const activeNurses = sortNursesByShiftScheduleOrder(filteredNurses);
+    const headers = ['No', 'Nama Perawat', 'NIP', 'Peran'];
+    for (let d = 1; d <= daysInMonth; d++) {
+      headers.push(String(d));
+    }
+    headers.push('Pagi (P)', 'Siang (S)', 'Pagi : Siang', 'Libur (L)', 'Cuti (C)', 'Sakit (SK)', 'Total Dinas');
+
+    const rows = activeNurses.map((nurse, idx) => {
+      let countP = 0;
+      let countS = 0;
+      let countL = 0;
+      let countC = 0;
+      let countSk = 0;
+
+      const roleLabel =
+        nurse.role === 'KARU' ? 'Kepala Ruang' : nurse.role === 'KATIM' ? 'PJ Shif' : 'Perawat Pelaksana';
+
+      const row: (string | number)[] = [
+        idx + 1,
+        nurse.name,
+        nurse.nip || '-',
+        roleLabel,
+      ];
+
+      for (let d = 1; d <= daysInMonth; d++) {
+        const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+        const nurseNameLower = (nurse.name || '').trim().toLowerCase();
+        const asg = assignments.find((a) => {
+          if (a.date !== dateStr) return false;
+          if (a.nurseId !== undefined && a.nurseId !== null && nurse.id !== undefined && nurse.id !== null && Number(a.nurseId) === Number(nurse.id)) return true;
+          if (a.nurseName && a.nurseName.trim().toLowerCase() === nurseNameLower) return true;
+          return false;
+        });
+
+        let code = 'L';
+        if (asg) {
+          const rawSt = String(asg.shiftType || '').toUpperCase();
+          if (rawSt === 'PAGI' || rawSt === 'P') code = 'P';
+          else if (rawSt === 'SIANG' || rawSt === 'S') code = 'S';
+          else if (rawSt === 'PAGI_SIANG' || rawSt === '2S' || rawSt === 'P+S') code = '2S';
+          else if (rawSt === 'LIBUR' || rawSt === 'L') code = 'L';
+          else if (rawSt === 'CUTI' || rawSt === 'C') code = 'C';
+          else if (rawSt === 'IZIN' || rawSt === 'I') code = 'I';
+          else if (rawSt === 'SAKIT' || rawSt === 'SK') code = 'SK';
+          else code = SHIFT_TYPE_INFO[asg.shiftType]?.code || 'L';
+        }
+
+        if (code === 'P') countP++;
+        else if (code === 'S') countS++;
+        else if (code === '2S') { countP++; countS++; }
+        else if (code === 'L') countL++;
+        else if (code === 'C') countC++;
+        else if (code === 'SK') countSk++;
+
+        row.push(code);
+      }
+
+      const ratioStr = `${countP} : ${countS}`;
+      row.push(countP, countS, ratioStr, countL, countC, countSk, countP + countS);
+      return row;
+    });
+
+    // Hitung ringkasan harian (Daily Summary) persis seperti matriks jadwal website
+    const dailyPCounts: (number | string)[] = [];
+    const dailySCounts: (number | string)[] = [];
+    const dailyRatioStrings: string[] = [];
+    const dailyTotalWork: (number | string)[] = [];
+
+    let grandTotalP = 0;
+    let grandTotalS = 0;
+
+    for (let d = 1; d <= daysInMonth; d++) {
+      const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      const dayOfWeek = new Date(year, month - 1, d).getDay();
+      const isSunday = dayOfWeek === 0;
+
+      let pCount = 0;
+      let sCount = 0;
+
+      activeNurses.forEach((nurse) => {
+        const nurseNameLower = (nurse.name || '').trim().toLowerCase();
+        const asg = assignments.find((a) => {
+          if (a.date !== dateStr) return false;
+          if (a.nurseId !== undefined && a.nurseId !== null && nurse.id !== undefined && nurse.id !== null && Number(a.nurseId) === Number(nurse.id)) return true;
+          if (a.nurseName && a.nurseName.trim().toLowerCase() === nurseNameLower) return true;
+          return false;
+        });
+
+        let code = 'L';
+        if (asg) {
+          const rawSt = String(asg.shiftType || '').toUpperCase();
+          if (rawSt === 'PAGI' || rawSt === 'P') code = 'P';
+          else if (rawSt === 'SIANG' || rawSt === 'S') code = 'S';
+          else if (rawSt === 'PAGI_SIANG' || rawSt === '2S' || rawSt === 'P+S') code = '2S';
+        }
+
+        if (code === 'P') {
+          pCount++;
+        } else if (code === 'S') {
+          sCount++;
+        } else if (code === '2S') {
+          pCount++;
+          sCount++;
+        }
+      });
+
+      if (isSunday) {
+        dailyPCounts.push('-');
+        dailySCounts.push('-');
+        dailyRatioStrings.push('-');
+        dailyTotalWork.push('-');
+      } else {
+        dailyPCounts.push(pCount);
+        dailySCounts.push(sCount);
+        dailyRatioStrings.push(`${pCount} : ${sCount}`);
+        dailyTotalWork.push(pCount + sCount);
+        grandTotalP += pCount;
+        grandTotalS += sCount;
+      }
+    }
+
+    const summaryRows: (string | number)[][] = [
+      ['REKAP', '-', '-', 'Total Shift Pagi (P)', ...dailyPCounts, grandTotalP, '-', '-', '-', '-', '-', grandTotalP],
+      ['REKAP', '-', '-', 'Total Shift Siang (S)', ...dailySCounts, '-', grandTotalS, '-', '-', '-', '-', grandTotalS],
+      ['REKAP', '-', '-', 'Perbandingan Harian (P : S)', ...dailyRatioStrings, grandTotalP, grandTotalS, `${grandTotalP} : ${grandTotalS}`, '-', '-', '-', `${grandTotalP + grandTotalS}`],
+      ['REKAP', '-', '-', 'Total Dinas (P+S)', ...dailyTotalWork, grandTotalP, grandTotalS, `${grandTotalP} : ${grandTotalS}`, '-', '-', '-', grandTotalP + grandTotalS],
+    ];
+
+    return {
+      year,
+      month,
+      monthName,
+      formattedMonthTitle,
+      monthString,
+      daysInMonth,
+      headers,
+      rows,
+      summaryRows,
+    };
+  }
+
+  /**
+   * Fetches Nurses, Machines, Bays, and Schedules directly from Google Apps Script Web App.
+   * Works on any device without Firebase quota limits.
+   */
+  /**
+   * Validates the Google Apps Script Webhook URL format and provides clear error messages.
+   */
+  static validateWebhookUrl(url: string): { isValid: boolean; errorMessage?: string } {
+    if (!url || url.trim() === '') {
+      return {
+        isValid: false,
+        errorMessage: 'URL Webhook Google Apps Script belum diisi. Silakan masukkan Web App URL di tab Laporan & Sinkronisasi.',
+      };
+    }
+
+    const trimmed = url.trim();
+
+    if (trimmed.includes('docs.google.com/spreadsheets/d/') && !trimmed.includes('/exec')) {
+      return {
+        isValid: false,
+        errorMessage:
+          'URL yang dimasukkan adalah tautan file Spreadsheet Google biasa, bukan URL Webhook Apps Script. Silakan pasang script dan gunakan URL Web App dari Google Apps Script (berakhiran /exec). Klik tombol "Panduan Setup Webhook".',
+      };
+    }
+
+    if (!trimmed.startsWith('https://') && !trimmed.startsWith('http://')) {
+      return {
+        isValid: false,
+        errorMessage: 'URL Webhook tidak valid. URL harus diawali dengan https://script.google.com/macros/s/.../exec',
+      };
+    }
+
+    if (trimmed.endsWith('/dev')) {
+      return {
+        isValid: false,
+        errorMessage:
+          'URL Webhook berakhiran "/dev" (mode pengujian) yang mewajibkan login akun Google dan memblokir sinkronisasi otomatis. Harap gunakan URL Web App Production yang berakhiran "/exec".',
+      };
+    }
+
+    return { isValid: true };
+  }
+
+  /**
+   * Tests the connection to Google Apps Script Webhook directly.
+   */
+  static async testConnection(webhookUrl: string): Promise<{ isSuccess: boolean; message: string; latencyMs?: number }> {
+    const trimmed = (webhookUrl || '').trim();
+    const validation = this.validateWebhookUrl(trimmed);
+    if (!validation.isValid) {
+      return {
+        isSuccess: false,
+        message: validation.errorMessage || 'URL Webhook tidak valid.',
+      };
+    }
+
+    const startTime = Date.now();
+    try {
+      const separator = trimmed.includes('?') ? '&' : '?';
+      const testUrl = `${trimmed}${separator}action=PING&t=${Date.now()}`;
+      const response = await fetch(testUrl, {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+      });
+
+      const latencyMs = Date.now() - startTime;
+
+      if (!response.ok) {
+        return {
+          isSuccess: false,
+          message: `Server Google Apps Script merespons dengan HTTP ${response.status} ${response.statusText}.`,
+          latencyMs,
+        };
+      }
+
+      const data = await response.json();
+      if (data.status === 'error') {
+        return {
+          isSuccess: false,
+          message: `Google Apps Script melaporkan error: ${data.message || 'Error internal script'}`,
+          latencyMs,
+        };
+      }
+
+      return {
+        isSuccess: true,
+        message: `Koneksi Google Sheets berhasil & responsif (${latencyMs}ms)! Webhook siap digunakan.`,
+        latencyMs,
+      };
+    } catch (e: unknown) {
+      const latencyMs = Date.now() - startTime;
+      const errorMsg = e instanceof Error ? e.message : String(e);
+      let tip = '';
+      if (errorMsg.includes('Failed to fetch') || errorMsg.includes('NetworkError') || errorMsg.includes('Load failed')) {
+        tip = ' Solusi: Buka Google Apps Script -> Deploy -> Manage Deployments -> klik Edit (ikon pensil) -> pastikan "Who has access" diatur ke "Anyone" (Siapa saja), lalu simpan deployment baru.';
+      }
+      return {
+        isSuccess: false,
+        message: `Gagal menghubungi Google Apps Script: ${errorMsg}.${tip}`,
+        latencyMs,
+      };
+    }
+  }
+
+  static async fetchDataFromGoogleSheets(
+    webhookUrl: string,
+    targetMonth?: string
+  ): Promise<GoogleSheetsFetchResult> {
+    const trimmedUrl = (webhookUrl || '').trim();
+    const validation = this.validateWebhookUrl(trimmedUrl);
+    if (!validation.isValid) {
+      return {
+        isSuccess: false,
+        message: validation.errorMessage || 'URL Webhook Google Apps Script belum valid.',
+        nurses: [],
+        machines: [],
+        assignments: [],
+      };
+    }
+
+    try {
+      // Append query param action=GET_ALL and target month if available
+      const separator = trimmedUrl.includes('?') ? '&' : '?';
+      const monthParam = targetMonth ? `&month=${encodeURIComponent(targetMonth)}` : '';
+      const fetchUrl = `${trimmedUrl}${separator}action=GET_ALL${monthParam}&t=${Date.now()}`;
+
+      const response = await fetch(fetchUrl, {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`Server Google Apps Script mengembalikan status: ${response.status} ${response.statusText}`);
+      }
+
+      const data = await response.json();
+
+      if (data.status === 'error') {
+        throw new Error(data.message || 'Google Apps Script melaporkan error.');
+      }
+
+      // Parse and sanitize helper
+      const PURGED_SPECIAL_DUTIES = new Set([
+        'REUSE DIALYZER',
+        'REUSE',
+        'IPCN / PPI HD',
+        'IPCN / PPI',
+        'IPCN',
+        'PPI',
+        'KLAIM & DOKUMEN BPJS',
+        'KLAIM & BPJS',
+        'BPJS',
+      ]);
+
+      const cleanDuty = (raw?: string | null): string | null => {
+        if (!raw) return null;
+        const parsed = parseSpecialDuties(raw);
+        const filtered = parsed
+          .filter((c) => {
+            const up = c.toUpperCase();
+            if (PURGED_SPECIAL_DUTIES.has(up)) return false;
+            if (up.includes('REUSE') || up.includes('IPCN') || up.includes('PPI') || up.includes('BPJS')) return false;
+            return true;
+          })
+          .map((c) => (c === 'FARMASI & LOGISTIK' ? 'FARMASI LOGISTIK' : c));
+        return formatSpecialDuties(filtered);
+      };
+
+      // Parse and validate nurses
+      const rawNurses = Array.isArray(data.nurses) ? data.nurses : [];
+      const parsedNurses: Nurse[] = rawNurses
+        .map((rn: any, idx: number) => {
+          if (!rn || (!rn.name && !rn.nama)) return null;
+          const name = String(rn.name || rn.nama || '').trim();
+          const roleRaw = String(rn.role || rn.peran || 'PELAKSANA').toUpperCase();
+          if (
+            !name ||
+            name === '-' ||
+            name === '--' ||
+            name === '---' ||
+            name.replace(/[^a-zA-Z0-9]/g, '').length < 2 ||
+            name.toLowerCase().includes('admin') ||
+            roleRaw.includes('ADMIN') ||
+            name.includes('1790191588620') ||
+            name.includes('1790218743659')
+          ) {
+            return null;
+          }
+          const role: NurseRole = roleRaw.includes('KARU')
+            ? 'KARU'
+            : roleRaw.includes('KATIM') || roleRaw.includes('PJ')
+            ? 'KATIM'
+            : 'PELAKSANA';
+
+          return {
+            id: Number(rn.id) || 1000 + idx,
+            name,
+            nip: String(rn.nip || '').trim(),
+            phone: String(rn.phone || rn.noWhatsApp || rn.noWa || '').trim(),
+            role,
+            isActive: rn.isActive !== undefined ? Boolean(rn.isActive) : true,
+            skillLevel: (rn.skillLevel || 'Senior') as 'Senior' | 'Medium' | 'Junior',
+            specialDuty: cleanDuty(rn.specialDuty ? String(rn.specialDuty).trim() : null),
+            defaultOffDay: rn.defaultOffDay !== undefined && rn.defaultOffDay !== null ? Number(rn.defaultOffDay) : null,
+            isPermanent: true,
+          };
+        })
+        .filter((n: unknown): n is Nurse => Boolean(n));
+
+      // Parse and validate machines
+      const rawMachines = Array.isArray(data.machines) ? data.machines : [];
+      const parsedMachines: Machine[] = rawMachines
+        .map((rm: any, idx: number) => {
+          if (!rm || (!rm.code && !rm.kode)) return null;
+          const code = String(rm.code || rm.kode || '').trim().toUpperCase();
+          const name = String(rm.name || rm.nama || `Mesin ${code}`).trim();
+          const bay = String(rm.bay || rm.ruangan || 'Bay A (Reguler)').trim();
+          const catRaw = String(rm.category || rm.kategori || 'REGULER').toUpperCase();
+          const statusRaw = String(rm.status || 'AKTIF').toUpperCase();
+
+          const category: MachineCategory =
+            catRaw.includes('HEPATITIS_B') || catRaw.includes('HEPB')
+              ? 'HEPATITIS_B'
+              : catRaw.includes('HEPATITIS_C') || catRaw.includes('HEPC')
+              ? 'HEPATITIS_C'
+              : catRaw.includes('ISOLASI')
+              ? 'ISOLASI'
+              : 'REGULER';
+
+          const status: MachineStatus = statusRaw.includes('RUSAK')
+            ? 'RUSAK'
+            : statusRaw.includes('MAINTENANCE')
+            ? 'MAINTENANCE'
+            : 'AKTIF';
+
+          return {
+            id: Number(rm.id) || idx + 1,
+            code,
+            name,
+            bay,
+            category,
+            status,
+            brandModel: String(rm.brandModel || rm.brand || '').trim(),
+            notes: String(rm.notes || rm.catatan || '').trim(),
+          };
+        })
+        .filter((m: unknown): m is Machine => Boolean(m));
+
+      // Parse and merge bays: only keep bays that have assigned machines
+      const parsedBaysSet = new Set<string>();
+      parsedMachines.forEach((m) => {
+        if (m.bay && m.bay.trim()) {
+          parsedBaysSet.add(m.bay.trim());
+        }
+      });
+      const rawBays = Array.isArray(data.bays) ? data.bays : [];
+      rawBays.forEach((b: any) => {
+        const bName = typeof b === 'string' ? b.trim() : typeof b?.name === 'string' ? b.name.trim() : '';
+        if (bName && parsedMachines.some((m) => m.bay?.trim().toLowerCase() === bName.toLowerCase())) {
+          parsedBaysSet.add(bName);
+        }
+      });
+      const parsedBays: string[] = Array.from(parsedBaysSet);
+
+      // Parse Special Duty Options (Master Tugas Khusus)
+      const rawSpecialDuties = Array.isArray(data.specialDutyOptions)
+        ? data.specialDutyOptions
+        : Array.isArray(data.specialDuties)
+        ? data.specialDuties
+        : [];
+
+      let parsedSpecialDuties: SpecialDutyOption[] = [];
+      if (rawSpecialDuties.length > 0) {
+        parsedSpecialDuties = rawSpecialDuties
+          .map((sd: any) => {
+            if (!sd || (!sd.code && !sd.kode && !sd.name && !sd.label)) return null;
+            let code = String(sd.code || sd.kode || sd.name || sd.label || '').trim().toUpperCase();
+            if (code === 'FARMASI & LOGISTIK') code = 'FARMASI LOGISTIK';
+            if (PURGED_SPECIAL_DUTIES.has(code)) return null;
+
+            const shortName = String(sd.shortName || sd.singkatan || code).trim();
+            const label = String(sd.label || sd.namaLengkap || `Tugas Khusus ${code}`).trim();
+            const description = String(sd.description || sd.deskripsi || '').trim();
+            const colorName = String(sd.colorName || sd.warna || 'Biru').trim();
+            const dotColorHex = String(sd.dotColorHex || sd.hex || '#3b82f6').trim();
+            const isCustom = sd.isCustom !== undefined ? Boolean(sd.isCustom) : !['BHP', 'FARMASI LOGISTIK', 'NATRIUM RO', 'PJ SHIF', 'CITO'].includes(code);
+
+            // Default color classes based on color or code
+            let bgClass = 'bg-blue-500';
+            let badgeClass = 'bg-blue-100 text-blue-800 border-blue-300 dark:bg-blue-950/70 dark:text-blue-300 dark:border-blue-800';
+            let textClass = 'text-blue-700 dark:text-blue-300';
+            let borderClass = 'border-blue-200 dark:border-blue-800';
+
+            if (code === 'CITO' || colorName.toLowerCase().includes('merah tua')) {
+              bgClass = 'bg-red-600';
+              badgeClass = 'bg-red-100 text-red-800 border-red-300 dark:bg-red-950/70 dark:text-red-300 dark:border-red-800';
+              textClass = 'text-red-700 dark:text-red-300';
+              borderClass = 'border-red-200 dark:border-red-800';
+            } else if (code.includes('FARMASI') || colorName.toLowerCase().includes('merah') || colorName.toLowerCase().includes('rose')) {
+              bgClass = 'bg-rose-500';
+              badgeClass = 'bg-rose-100 text-rose-800 border-rose-300 dark:bg-rose-950/70 dark:text-rose-300 dark:border-rose-800';
+              textClass = 'text-rose-700 dark:text-rose-300';
+              borderClass = 'border-rose-200 dark:border-rose-800';
+            } else if (code.includes('NATRIUM') || colorName.toLowerCase().includes('kuning') || colorName.toLowerCase().includes('amber')) {
+              bgClass = 'bg-amber-400';
+              badgeClass = 'bg-amber-100 text-amber-900 border-amber-300 dark:bg-amber-950/70 dark:text-amber-300 dark:border-amber-800';
+              textClass = 'text-amber-700 dark:text-amber-300';
+              borderClass = 'border-amber-200 dark:border-amber-800';
+            } else if (code.includes('PJ') || colorName.toLowerCase().includes('hijau') || colorName.toLowerCase().includes('emerald')) {
+              bgClass = 'bg-emerald-500';
+              badgeClass = 'bg-emerald-100 text-emerald-800 border-emerald-300 dark:bg-emerald-950/70 dark:text-emerald-300 dark:border-emerald-800';
+              textClass = 'text-emerald-700 dark:text-emerald-300';
+              borderClass = 'border-emerald-200 dark:border-emerald-800';
+            } else if (colorName.toLowerCase().includes('ungu') || colorName.toLowerCase().includes('purple')) {
+              bgClass = 'bg-purple-500';
+              badgeClass = 'bg-purple-100 text-purple-800 border-purple-300 dark:bg-purple-950/70 dark:text-purple-300 dark:border-purple-800';
+              textClass = 'text-purple-700 dark:text-purple-300';
+              borderClass = 'border-purple-200 dark:border-purple-800';
+            }
+
+            return {
+              id: String(sd.id || code),
+              code,
+              label,
+              shortName,
+              description,
+              colorName,
+              dotColorHex,
+              bgClass,
+              badgeClass,
+              textClass,
+              borderClass,
+              isCustom,
+            };
+          })
+          .filter((opt: unknown): opt is SpecialDutyOption => Boolean(opt));
+      }
+
+      // Parse assignments
+      const rawAssignments = Array.isArray(data.assignments) ? data.assignments : [];
+      const parsedAssignments: ShiftAssignment[] = rawAssignments
+        .map((ra: any, idx: number) => {
+          if (!ra || !ra.date) return null;
+          const nurseNameStr = String(ra.nurseName || '').trim();
+          if (
+            nurseNameStr === '-' ||
+            nurseNameStr === '--' ||
+            nurseNameStr === '---' ||
+            (nurseNameStr && nurseNameStr.replace(/[^a-zA-Z0-9]/g, '').length < 2 && !ra.nurseId)
+          ) {
+            return null;
+          }
+          if (!ra.nurseName && !ra.nurseId) return null;
+          let assignedMachineIds: number[] = [];
+          const rawCodesFound: string[] = [];
+          if (Array.isArray(ra.assignedMachineIds)) {
+            assignedMachineIds = ra.assignedMachineIds.map((id: any) => Number(id)).filter((id: number) => !isNaN(id));
+          } else if (Array.isArray(ra.machines)) {
+            ra.machines.forEach((code: any) => {
+              const codeStr = String(code).trim().toUpperCase();
+              if (codeStr) rawCodesFound.push(codeStr);
+              const cleanCode = codeStr.replace(/^MACH-?/i, '');
+              const matched = parsedMachines.find(
+                (m) => m.code.toUpperCase() === cleanCode || m.code.toUpperCase() === codeStr || String(m.id) === codeStr
+              );
+              if (matched && typeof matched.id === 'number') {
+                assignedMachineIds.push(matched.id);
+              }
+            });
+          } else if (typeof ra.machines === 'string' && ra.machines.trim()) {
+            const codes = ra.machines.split(/[,;\s]+/).map((s: string) => s.trim().toUpperCase()).filter(Boolean);
+            codes.forEach((code: string) => {
+              rawCodesFound.push(code);
+              const cleanCode = code.replace(/^MACH-?/i, '');
+              const matched = parsedMachines.find(
+                (m) => m.code.toUpperCase() === cleanCode || m.code.toUpperCase() === code || String(m.id) === code
+              );
+              if (matched && typeof matched.id === 'number') {
+                assignedMachineIds.push(matched.id);
+              }
+            });
+          }
+
+          const shiftRaw = String(ra.shiftType || ra.shiftCode || 'LIBUR').toUpperCase();
+          const shiftType = shiftRaw.includes('PAGI') || shiftRaw === 'P'
+            ? 'PAGI'
+            : (shiftRaw.includes('SIANG') || shiftRaw === 'S') && !shiftRaw.includes('SAKIT') && shiftRaw !== 'SK'
+            ? 'SIANG'
+            : shiftRaw.includes('CUTI') || shiftRaw === 'C'
+            ? 'CUTI'
+            : shiftRaw.includes('SAKIT') || shiftRaw === 'SK'
+            ? 'SAKIT'
+            : 'LIBUR';
+
+          // Link with nurse record if nurseId is missing or default
+          const matchedNurse = parsedNurses.find(
+            (n) => n.name.toLowerCase() === String(ra.nurseName || '').trim().toLowerCase() || n.id === Number(ra.nurseId)
+          );
+
+          const rawDuty = ra.specialDuty ? String(ra.specialDuty).trim() : (matchedNurse ? matchedNurse.specialDuty : null);
+          const sanitizedDuty = cleanDuty(rawDuty);
+
+          return {
+            id: String(ra.id || `${ra.date}-${ra.nurseId || idx}`),
+            date: String(ra.date).trim(),
+            shiftType,
+            nurseId: matchedNurse ? matchedNurse.id : (Number(ra.nurseId) || idx),
+            nurseName: matchedNurse ? matchedNurse.name : String(ra.nurseName || '').trim(),
+            nursePhone: matchedNurse ? matchedNurse.phone : String(ra.nursePhone || '').trim(),
+            assignedMachineIds,
+            rawMachineCodes: rawCodesFound,
+            isLeader: Boolean(ra.isLeader || (matchedNurse && (matchedNurse.role === 'KATIM' || matchedNurse.role === 'KARU'))),
+            isWhatsAppSent: Boolean(ra.isWhatsAppSent),
+            notes: String(ra.notes || '').trim(),
+            specialDuty: sanitizedDuty,
+          };
+        })
+        .filter((a: unknown): a is ShiftAssignment => Boolean(a));
+
+      // Parse and validate doctors
+      const rawDoctors = Array.isArray(data.doctors) ? data.doctors : [];
+      const parsedDoctors: Doctor[] = rawDoctors
+        .map((rd: any, idx: number) => {
+          if (!rd || (!rd.name && !rd.nama)) return null;
+          const name = String(rd.name || rd.nama || '').trim();
+          if (!name) return null;
+          const roleRaw = String(rd.role || rd.peran || 'DOKTER_RUANGAN').toUpperCase();
+          const role = roleRaw.includes('DPJP') ? 'DPJP' : 'DOKTER_RUANGAN';
+
+          return {
+            id: Number(rd.id) || 1000 + idx,
+            name,
+            sip: String(rd.sip || '').trim(),
+            phone: String(rd.phone || rd.noWhatsApp || rd.noWa || '').trim(),
+            role,
+            specialization: String(rd.specialization || rd.spesialisasi || '').trim(),
+            isActive: rd.isActive !== undefined ? Boolean(rd.isActive) : true,
+          };
+        })
+        .filter((d: unknown): d is Doctor => Boolean(d));
+
+      // Parse and validate doctor duties
+      const rawDuties = Array.isArray(data.doctorDuties) ? data.doctorDuties : [];
+      const parsedDoctorDuties: Record<string, DoctorShiftDuty> = {};
+      rawDuties.forEach((dd: any) => {
+        if (dd && dd.date) {
+          const dStr = String(dd.date).trim();
+          parsedDoctorDuties[dStr] = {
+            date: dStr,
+            pagiDoctorId: dd.pagiDoctorId ? Number(dd.pagiDoctorId) : null,
+            pagiDoctorName: dd.pagiDoctorName && dd.pagiDoctorName !== '-' ? String(dd.pagiDoctorName).trim() : undefined,
+            siangDoctorId: dd.siangDoctorId ? Number(dd.siangDoctorId) : null,
+            siangDoctorName: dd.siangDoctorName && dd.siangDoctorName !== '-' ? String(dd.siangDoctorName).trim() : undefined,
+            notes: String(dd.notes || '').trim(),
+          };
+        }
+      });
+
+      const docSummary = parsedDoctors.length > 0 ? `, ${parsedDoctors.length} dokter jaga` : '';
+      const baySummary = parsedBays.length > 0 ? `, ${parsedBays.length} bay` : '';
+      const dutySummary = parsedSpecialDuties.length > 0 ? `, ${parsedSpecialDuties.length} tugas khusus` : '';
+
+      return {
+        isSuccess: true,
+        message: `Berhasil menarik 2-arah: ${parsedNurses.length} perawat, ${parsedMachines.length} mesin, ${parsedAssignments.length} jadwal perawat${docSummary}${baySummary}${dutySummary} dari Google Sheets!`,
+        nurses: parsedNurses,
+        machines: parsedMachines,
+        bays: parsedBays,
+        assignments: parsedAssignments,
+        doctors: parsedDoctors,
+        doctorDuties: parsedDoctorDuties,
+        specialDutyOptions: parsedSpecialDuties.length > 0 ? parsedSpecialDuties : undefined,
+      };
+    } catch (err: unknown) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      return {
+        isSuccess: false,
+        message: `Gagal memuat data dari Google Sheets: ${errorMsg}`,
+        nurses: [],
+        machines: [],
+        assignments: [],
+      };
+    }
+  }
+
+  /**
+   * Helper to build a comprehensive daily list for doctor duties across the whole month.
+   */
+  static buildDoctorDutiesList(
+    monthString: string,
+    doctorDuties?: Record<string, DoctorShiftDuty>,
+    doctors?: Doctor[]
+  ) {
+    const [yStr, mStr] = monthString.split('-');
+    const year = parseInt(yStr, 10) || new Date().getFullYear();
+    const month = parseInt(mStr, 10) || (new Date().getMonth() + 1);
+    const daysInMonth = new Date(year, month, 0).getDate();
+    const indonesianDays = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+    const docList = doctors || [];
+
+    const list = [];
+    for (let d = 1; d <= daysInMonth; d++) {
+      const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      const dayObj = new Date(year, month - 1, d);
+      const isSunday = dayObj.getDay() === 0;
+      const dayName = indonesianDays[dayObj.getDay()];
+      const duty = doctorDuties ? doctorDuties[dateStr] : undefined;
+
+      const rawPagi =
+        duty?.pagiDoctorName ||
+        (duty?.pagiDoctorId ? docList.find((doc) => doc.id === duty.pagiDoctorId)?.name : '-') ||
+        '-';
+      const rawSiang =
+        duty?.siangDoctorName ||
+        (duty?.siangDoctorId ? docList.find((doc) => doc.id === duty.siangDoctorId)?.name : '-') ||
+        '-';
+
+      const pagiDoc = isSunday ? '-' : rawPagi;
+      const siangDoc = isSunday ? '-' : rawSiang;
+
+      let status = 'Belum Terisi';
+      if (isSunday) {
+        status = 'Libur Rutin HD (Minggu)';
+      } else if (pagiDoc !== '-' && siangDoc !== '-') {
+        status = pagiDoc === siangDoc ? '2 Shif Sekaligus' : 'Lengkap (2 Dr)';
+      } else if (pagiDoc !== '-') {
+        status = 'Pagi Saja';
+      } else if (siangDoc !== '-') {
+        status = 'Siang Saja';
+      }
+
+      list.push({
+        no: d,
+        date: dateStr,
+        dayName,
+        dayNumber: d,
+        isSunday,
+        pagiDoctorId: duty?.pagiDoctorId || '',
+        pagiDoctorName: pagiDoc,
+        siangDoctorId: duty?.siangDoctorId || '',
+        siangDoctorName: siangDoc,
+        status: duty?.status || status,
+        notes: duty?.notes || (isSunday ? 'Libur Rutin HD (Hari Minggu)' : ''),
+      });
+    }
+    return list;
+  }
+
+  /**
+   * Sends master data and/or active monthly schedules directly to Google Sheets.
+   * Supports both full synchronization and targeted/partial synchronization (PartialSyncTargets).
+   */
+  static async syncAllToGoogleSheets(
+    webhookUrl: string,
+    monthString: string,
+    nurses: Nurse[],
+    machines: Machine[],
+    assignments: ShiftAssignment[],
+    bays: string[],
+    doctors?: Doctor[],
+    doctorDuties?: Record<string, DoctorShiftDuty>,
+    specialDutyOptions?: SpecialDutyOption[],
+    dailySpecialTasks?: any[],
+    syncTargets?: PartialSyncTargets
+  ): Promise<GoogleSheetsSyncAllResult> {
+    const trimmedUrl = (webhookUrl || '').trim();
+    const validation = this.validateWebhookUrl(trimmedUrl);
+    if (!validation.isValid) {
+      return {
+        isSuccess: false,
+        message: validation.errorMessage || 'URL Webhook Google Apps Script belum valid.',
+      };
+    }
+
+    try {
+      // Determine which parts to include
+      const includeMatrix = !syncTargets || syncTargets.matrixSchedule !== false;
+      const includeDoctorDuties = !syncTargets || syncTargets.doctorDuties !== false;
+      const includeAssignments = !syncTargets || syncTargets.machineAssignments !== false;
+      const includeSpecialTasks = !syncTargets || syncTargets.specialTasks !== false;
+      const includeNurses = !syncTargets || syncTargets.nursesMaster !== false;
+      const includeMachines = !syncTargets || syncTargets.machinesMaster !== false;
+      const includeDoctors = !syncTargets || syncTargets.doctorsMaster !== false;
+      const includeSpecialDuties = !syncTargets || syncTargets.specialDutiesMaster !== false;
+
+      const isPartial = Boolean(
+        syncTargets &&
+        (!includeMatrix || !includeDoctorDuties || !includeAssignments || !includeSpecialTasks ||
+         !includeNurses || !includeMachines || !includeDoctors || !includeSpecialDuties)
+      );
+
+      const sortedNurses = sortNursesByShiftScheduleOrder(nurses);
+      const matrixData = this.buildScheduleMatrix(monthString, sortedNurses, assignments);
+      const dutiesList = this.buildDoctorDutiesList(monthString, doctorDuties, doctors);
+      const dutyOpts = specialDutyOptions && specialDutyOptions.length > 0 ? specialDutyOptions : DEFAULT_SPECIAL_DUTY_OPTIONS;
+
+      const payload: Record<string, any> = {
+        action: isPartial ? 'PARTIAL_SYNC' : 'SYNC_ALL',
+        month: monthString,
+        monthName: matrixData.monthName,
+        formattedMonthTitle: matrixData.formattedMonthTitle,
+        syncTimestamp: Date.now(),
+        isPartialSync: isPartial,
+        syncTargets: syncTargets || null,
+        syncScheduleMatrix: includeMatrix,
+        syncDoctorDuties: includeDoctorDuties,
+        syncAssignments: includeAssignments,
+        syncSpecialTasks: includeSpecialTasks,
+        syncNurses: includeNurses,
+        syncMachines: includeMachines,
+        syncDoctors: includeDoctors,
+        syncSpecialDutiesMaster: includeSpecialDuties,
+      };
+
+      if (includeMatrix) {
+        payload.scheduleMatrix = matrixData;
+      }
+      if (includeMachines) {
+        payload.bays = bays || [];
+        const sortedMachines = [...machines].sort(
+          (a, b) => getMachineDenahSortRank(a.code, a.bay) - getMachineDenahSortRank(b.code, b.bay)
+        );
+        payload.machines = sortedMachines.map((m) => ({
+          id: m.id,
+          code: m.code,
+          name: m.name,
+          bay: m.bay,
+          category: m.category,
+          status: m.status,
+          brandModel: m.brandModel || '',
+          notes: m.notes || '',
+        }));
+      }
+      if (includeSpecialDuties) {
+        payload.specialDutyOptions = dutyOpts.map((opt) => ({
+          id: opt.id,
+          code: opt.code,
+          shortName: opt.shortName,
+          label: opt.label,
+          description: opt.description || '',
+          colorName: opt.colorName || 'Biru',
+          dotColorHex: opt.dotColorHex || '#3b82f6',
+          isCustom: Boolean(opt.isCustom),
+        }));
+      }
+      if (includeNurses) {
+        payload.nurses = sortedNurses.map((n) => ({
+          id: n.id,
+          name: n.name,
+          nip: n.nip || '',
+          phone: n.phone || '',
+          role: n.role,
+          isActive: n.isActive,
+          skillLevel: n.skillLevel,
+          specialDuty: n.specialDuty || '',
+          defaultOffDay: n.defaultOffDay !== undefined ? n.defaultOffDay : '',
+        }));
+      }
+      if (includeAssignments) {
+        payload.assignments = assignments.map((a) => {
+          const mCodes = (a.assignedMachineIds || [])
+            .map((mId) => {
+              const rawStr = String(mId).trim();
+              const cleanCodeOnly = rawStr.replace(/^MACH-?/i, '').toUpperCase();
+              const matched = machines.find((m) => 
+                String(m.id).toUpperCase() === rawStr.toUpperCase() || 
+                m.code.toUpperCase() === rawStr.toUpperCase() ||
+                m.code.toUpperCase() === cleanCodeOnly ||
+                String(m.id).toUpperCase() === cleanCodeOnly
+              );
+              return matched?.code || (cleanCodeOnly || rawStr);
+            })
+            .filter(Boolean);
+          return {
+            id: a.id,
+            date: a.date,
+            shiftType: SHIFT_TYPE_INFO[a.shiftType]?.label || a.shiftType,
+            shiftCode: SHIFT_TYPE_INFO[a.shiftType]?.code || a.shiftType,
+            nurseId: a.nurseId,
+            nurseName: a.nurseName,
+            isLeader: a.isLeader,
+            machines: mCodes,
+            machineCount: mCodes.length,
+            notes: a.notes || '',
+            specialDuty: a.specialDuty || '',
+          };
+        });
+      }
+      if (includeSpecialTasks) {
+        const sortedTasks = [...(dailySpecialTasks || [])].sort((a: any, b: any) => {
+          const dateComp = String(a.date || '').localeCompare(String(b.date || ''));
+          if (dateComp !== 0) return dateComp;
+          const shiftRankA = String(a.shift || '').toLowerCase().includes('siang') ? 2 : 1;
+          const shiftRankB = String(b.shift || '').toLowerCase().includes('siang') ? 2 : 1;
+          if (shiftRankA !== shiftRankB) return shiftRankA - shiftRankB;
+          const taskRankA = getSpecialTaskCategoryRank(a.categoryName || a.category || a.title);
+          const taskRankB = getSpecialTaskCategoryRank(b.categoryName || b.category || b.title);
+          if (taskRankA !== taskRankB) return taskRankA - taskRankB;
+          return String(a.nurseName || '').localeCompare(String(b.nurseName || ''));
+        });
+        payload.dailySpecialTasks = sortedTasks;
+      }
+      if (includeDoctors) {
+        payload.doctors = (doctors || []).map((doc) => ({
+          id: doc.id,
+          name: doc.name,
+          sip: doc.sip || '',
+          phone: doc.phone || '',
+          role: doc.role,
+          specialization: doc.specialization || '',
+          isActive: doc.isActive !== false,
+        }));
+      }
+      if (includeDoctorDuties) {
+        payload.doctorDuties = dutiesList;
+      }
+
+      let response: Response;
+      try {
+        response = await fetch(trimmedUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'text/plain;charset=utf-8',
+          },
+          body: JSON.stringify(payload),
+        });
+      } catch (corsErr) {
+        console.warn('Standard POST to Google Apps Script failed, retrying with mode: no-cors...', corsErr);
+        response = await fetch(trimmedUrl, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: {
+            'Content-Type': 'text/plain;charset=utf-8',
+          },
+          body: JSON.stringify(payload),
+        });
+      }
+
+      if (response.ok || response.type === 'opaque') {
+        if (isPartial) {
+          const syncedParts: string[] = [];
+          if (includeMatrix) syncedParts.push(`Matriks HD (${matrixData.formattedMonthTitle})`);
+          if (includeDoctorDuties) syncedParts.push(`Jadwal Dokter (${dutiesList.length} hari)`);
+          if (includeAssignments) syncedParts.push(`Alokasi Mesin (${assignments.length} baris)`);
+          if (includeSpecialTasks) syncedParts.push(`Tugas Khusus (${(dailySpecialTasks || []).length} tugas)`);
+          if (includeNurses) syncedParts.push(`Data Perawat (${sortedNurses.length})`);
+          if (includeMachines) syncedParts.push(`Data Mesin HD (${machines.length})`);
+          if (includeDoctors) syncedParts.push(`Data Dokter (${doctors?.length || 0})`);
+
+          return {
+            isSuccess: true,
+            message: `Berhasil sinkronisasi terarah (${syncedParts.length} modul): ${syncedParts.join(', ')} ke Google Sheets!`,
+            nursesCount: includeNurses ? sortedNurses.length : undefined,
+            machinesCount: includeMachines ? machines.length : undefined,
+            assignmentsCount: includeAssignments ? assignments.length : undefined,
+            doctorsCount: includeDoctors ? (doctors?.length || 0) : undefined,
+            doctorDutiesCount: includeDoctorDuties ? dutiesList.length : undefined,
+            baysCount: includeMachines ? (bays?.length || 0) : undefined,
+          };
+        } else {
+          const docMsg = doctors && doctors.length > 0 ? ` & ${doctors.length} dokter jaga` : '';
+          return {
+            isSuccess: true,
+            message: `Berhasil mengekspor 2-arah ke Google Sheets: tab "Matriks HD - ${matrixData.formattedMonthTitle}" (${assignments.length} jadwal perawat${docMsg}).`,
+            nursesCount: nurses.length,
+            machinesCount: machines.length,
+            assignmentsCount: assignments.length,
+            doctorsCount: doctors?.length || 0,
+            doctorDutiesCount: dutiesList.length,
+            baysCount: bays?.length || 0,
+          };
+        }
+      } else {
+        return {
+          isSuccess: false,
+          message: `Google Sheets mengembalikan status: ${response.status} ${response.statusText}`,
+        };
+      }
+    } catch (e: unknown) {
+      const errorMsg = e instanceof Error ? e.message : String(e);
+      let tip = '';
+      if (errorMsg.includes('Failed to fetch') || errorMsg.includes('NetworkError') || errorMsg.includes('Load failed')) {
+        tip = ' (Solusi: Pastikan Web App Apps Script di-deploy dengan akses: "Who has access: Anyone" dan URL berakhiran /exec).';
+      }
+      return {
+        isSuccess: false,
+        message: `Gagal menghubungi Google Sheet: ${errorMsg}${tip}`,
+      };
+    }
+  }
+
+  /**
+   * Menghapus seluruh riwayat jadwal tugas khusus di Google Sheets (Tab 'Jadwal Tugas Khusus').
+   */
+  static async clearSpecialTasksHistory(gasUrl?: string): Promise<{ isSuccess: boolean; message: string }> {
+    const trimmedUrl = (gasUrl || '').trim();
+    if (!trimmedUrl) {
+      return {
+        isSuccess: true,
+        message: 'Riwayat tugas khusus di sistem lokal & cloud berhasil dibersihkan (URL Google Apps Script belum disetel).',
+      };
+    }
+
+    try {
+      const payload = {
+        action: 'CLEAR_SPECIAL_TASKS',
+        timestamp: new Date().toISOString(),
+      };
+
+      let response: Response;
+      try {
+        response = await fetch(trimmedUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'text/plain;charset=utf-8',
+          },
+          body: JSON.stringify(payload),
+        });
+      } catch (corsErr) {
+        console.warn('Standard POST clear to GAS failed, retrying with no-cors...', corsErr);
+        response = await fetch(trimmedUrl, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: {
+            'Content-Type': 'text/plain;charset=utf-8',
+          },
+          body: JSON.stringify(payload),
+        });
+      }
+
+      if (response.ok || response.type === 'opaque') {
+        return {
+          isSuccess: true,
+          message: 'Berhasil membersihkan seluruh riwayat tugas khusus di sistem dan Google Sheet!',
+        };
+      } else {
+        return {
+          isSuccess: false,
+          message: `Google Sheets mengembalikan kode status: HTTP ${response.status}`,
+        };
+      }
+    } catch (err: any) {
+      console.error('Failed to clear special tasks on Google Sheets:', err);
+      return {
+        isSuccess: false,
+        message: `Terjadi kendala saat menghubungi Google Sheets: ${err?.message || 'Koneksi gagal'}`,
+      };
+    }
+  }
+
+  /**
+   * Mengirim seluruh daftar tugas khusus yang di-inputkan langsung ke tab 'Tugas Khusus' Google Sheets.
+   * Mendukung multi-bulan (September, Oktober, dan seterusnya) tanpa menghapus data bulan lain dan tanpa duplikasi.
+   */
+  static async syncSpecialTasksToGoogleSheets(
+    webhookUrl: string,
+    specialTasks: SpecialTask[],
+    employees: UserAccount[],
+    monthString?: string,
+    syncAllMonths: boolean = true
+  ): Promise<{ isSuccess: boolean; message: string; tasksCount?: number; monthsCount?: number }> {
+    const trimmedUrl = (webhookUrl || '').trim();
+    const validation = this.validateWebhookUrl(trimmedUrl);
+    if (!validation.isValid) {
+      return {
+        isSuccess: false,
+        message: validation.errorMessage || 'URL Webhook Google Apps Script belum disetel.',
+      };
+    }
+
+    try {
+      const dailySpecialTasks = (specialTasks || []).map((t) => {
+        const nurse = (employees || []).find(
+          (e) =>
+            String(e.id) === String(t.assignedToId) ||
+            String(e.nip) === String(t.assignedToId) ||
+            e.name.toLowerCase() === (t as any).nurseName?.toLowerCase()
+        );
+        const def = SPECIAL_TASK_DEFINITIONS[t.category as SpecialTaskCategory];
+        const categoryName = def?.name || t.title || t.category;
+        const nurseRole = nurse
+          ? nurse.role === 'kepala_ruangan'
+            ? 'Kepala Ruangan'
+            : (nurse.role === 'pj_shift' || (nurse.role as string) === 'katim')
+            ? 'PJ Sif / Katim'
+            : 'Perawat Pelaksana'
+          : (t.category === 'pj_shift' ? 'PJ Sif / Katim' : 'Perawat Pelaksana');
+
+        return {
+          id: t.id,
+          date: t.date,
+          shift: t.shift,
+          shiftLabel: String(t.shift).toLowerCase() === 'siang' ? 'Siang' : 'Pagi',
+          nurseId: t.assignedToId,
+          nurseName: nurse ? nurse.name : (t as any).nurseName || t.assignedToId,
+          nurseRole,
+          category: t.category,
+          categoryName,
+          shortCode: def?.shortCode || '',
+          title: t.title,
+          description: t.description || '',
+          priority: t.priority,
+          status: t.status,
+          createdAt: t.createdAt,
+          completedAt: t.completedAt || '',
+          completionNotes: t.completionNotes || '',
+        };
+      });
+
+      // Deteksi bulan-bulan yang terdapat di dalam daftar tugas khusus
+      const monthsSet = new Set<string>();
+      dailySpecialTasks.forEach((t) => {
+        if (t.date && t.date.length >= 7) {
+          monthsSet.add(t.date.substring(0, 7));
+        }
+      });
+      const uniqueMonths = Array.from(monthsSet).sort();
+
+      const indonesianMonths = [
+        'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
+        'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'
+      ];
+      const monthNames = uniqueMonths.map((m) => {
+        const [y, mNum] = m.split('-');
+        return `${indonesianMonths[parseInt(mNum, 10) - 1] || 'Bulan'} ${y}`;
+      });
+
+      const payload = {
+        action: 'SYNC_SPECIAL_TASKS',
+        syncSpecialTasks: true,
+        month: monthString || 'all',
+        syncAllMonths: syncAllMonths !== false,
+        targetMonths: uniqueMonths,
+        dailySpecialTasks,
+        specialTasks: dailySpecialTasks,
+        isPartialSync: true,
+        syncTargets: { specialTasks: true },
+        timestamp: new Date().toISOString(),
+      };
+
+      let response: Response;
+      try {
+        response = await fetch(trimmedUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'text/plain;charset=utf-8',
+          },
+          body: JSON.stringify(payload),
+        });
+      } catch (corsErr) {
+        response = await fetch(trimmedUrl, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: {
+            'Content-Type': 'text/plain;charset=utf-8',
+          },
+          body: JSON.stringify(payload),
+        });
+      }
+
+      if (response.ok || response.type === 'opaque') {
+        const monthsDesc = monthNames.length > 0 ? ` (${monthNames.join(', ')})` : '';
+        return {
+          isSuccess: true,
+          message: `Berhasil menyinkronkan ${dailySpecialTasks.length} tugas khusus${monthsDesc} ke tab "Tugas Khusus" di Google Sheets!`,
+          tasksCount: dailySpecialTasks.length,
+          monthsCount: uniqueMonths.length,
+        };
+      } else {
+        return {
+          isSuccess: false,
+          message: `Google Sheets mengembalikan kode status: HTTP ${response.status}`,
+        };
+      }
+    } catch (err: any) {
+      return {
+        isSuccess: false,
+        message: 'Gagal sinkronisasi tugas khusus: ' + (err?.message || err),
+      };
+    }
+  }
+
+  /**
+   * Sends the monthly schedule payload directly to Google Apps Script Webhook.
+   * Generates both the calendar matrix (template .xlsx format) and machine detail logs.
+   */
+  static async syncToGoogleSheets(
+    webhookUrl: string,
+    monthString: string,
+    nurses: Nurse[],
+    machines: Machine[],
+    assignments: ShiftAssignment[],
+    doctors?: Doctor[],
+    doctorDuties?: Record<string, DoctorShiftDuty>,
+    bays?: string[],
+    specialDutyOptions?: SpecialDutyOption[]
+  ): Promise<SyncResult> {
+    const trimmedUrl = (webhookUrl || '').trim();
+    const validation = this.validateWebhookUrl(trimmedUrl);
+    if (!validation.isValid) {
+      return {
+        isSuccess: false,
+        message: validation.errorMessage || 'URL Webhook Google Apps Script belum diisi.',
+      };
+    }
+
+    try {
+      const sortedNurses = sortNursesByShiftScheduleOrder(nurses);
+      const matrixData = this.buildScheduleMatrix(monthString, sortedNurses, assignments);
+      const dutiesList = this.buildDoctorDutiesList(monthString, doctorDuties, doctors);
+      const dutyOpts = specialDutyOptions && specialDutyOptions.length > 0 ? specialDutyOptions : DEFAULT_SPECIAL_DUTY_OPTIONS;
+
+      const payload = {
+        action: 'SYNC_SCHEDULE',
+        month: monthString,
+        monthName: matrixData.monthName,
+        formattedMonthTitle: matrixData.formattedMonthTitle,
+        syncTimestamp: Date.now(),
+        bays: bays || [],
+        specialDutyOptions: dutyOpts.map((opt) => ({
+          id: opt.id,
+          code: opt.code,
+          shortName: opt.shortName,
+          label: opt.label,
+          description: opt.description || '',
+          colorName: opt.colorName || 'Biru',
+          dotColorHex: opt.dotColorHex || '#3b82f6',
+          isCustom: Boolean(opt.isCustom),
+        })),
+        scheduleMatrix: matrixData,
+        nurses: sortedNurses.map((n) => ({
+          id: n.id,
+          name: n.name,
+          nip: n.nip,
+          phone: n.phone,
+          role: n.role,
+        })),
+        machines: machines.map((m) => ({
+          id: m.id,
+          code: m.code,
+          name: m.name,
+          bay: m.bay,
+          category: m.category,
+        })),
+        assignments: assignments.map((a) => {
+          const mCodes = (a.assignedMachineIds || [])
+            .map((mId) => {
+              const rawStr = String(mId).trim();
+              const cleanCodeOnly = rawStr.replace(/^MACH-?/i, '').toUpperCase();
+              const matched = machines.find((m) => 
+                String(m.id).toUpperCase() === rawStr.toUpperCase() || 
+                m.code.toUpperCase() === rawStr.toUpperCase() ||
+                m.code.toUpperCase() === cleanCodeOnly ||
+                String(m.id).toUpperCase() === cleanCodeOnly
+              );
+              return matched?.code || (cleanCodeOnly || rawStr);
+            })
+            .filter(Boolean);
+          return {
+            id: a.id,
+            date: a.date,
+            shiftType: SHIFT_TYPE_INFO[a.shiftType]?.label || a.shiftType,
+            shiftCode: SHIFT_TYPE_INFO[a.shiftType]?.code || a.shiftType,
+            nurseId: a.nurseId,
+            nurseName: a.nurseName,
+            isLeader: a.isLeader,
+            machines: mCodes,
+            machineCount: mCodes.length,
+            notes: a.notes,
+            specialDuty: a.specialDuty || '',
+          };
+        }),
+        doctors: (doctors || []).map((doc) => ({
+          id: doc.id,
+          name: doc.name,
+          sip: doc.sip || '',
+          phone: doc.phone || '',
+          role: doc.role,
+          specialization: doc.specialization || '',
+          isActive: doc.isActive !== false,
+        })),
+        doctorDuties: dutiesList,
+      };
+
+      // Try standard POST fetch then fallback to mode no-cors
+      let response: Response;
+      try {
+        response = await fetch(trimmedUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'text/plain;charset=utf-8',
+          },
+          body: JSON.stringify(payload),
+        });
+      } catch (corsErr) {
+        console.warn('Standard POST to Google Apps Script failed, retrying with mode: no-cors...', corsErr);
+        response = await fetch(trimmedUrl, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: {
+            'Content-Type': 'text/plain;charset=utf-8',
+          },
+          body: JSON.stringify(payload),
+        });
+      }
+
+      if (response.ok || response.type === 'opaque') {
+        return {
+          isSuccess: true,
+          message: `Berhasil menyinkronkan matriks ke tab "Matriks HD - ${matrixData.formattedMonthTitle}" di Google Sheets! (${assignments.length} jadwal perawat). Tab bulan sebelumnya tetap tersimpan utuh.`,
+          rowsSynced: assignments.length,
+        };
+      } else {
+        return {
+          isSuccess: false,
+          message: `Google Sheets mengembalikan status: ${response.status} ${response.statusText}`,
+        };
+      }
+    } catch (e: unknown) {
+      const errorMsg = e instanceof Error ? e.message : String(e);
+      let tip = '';
+      if (errorMsg.includes('Failed to fetch') || errorMsg.includes('NetworkError') || errorMsg.includes('Load failed')) {
+        tip = ' (Solusi: Pastikan Web App Apps Script di-deploy dengan akses: "Who has access: Anyone" dan URL berakhiran /exec).';
+      }
+      return {
+        isSuccess: false,
+        message: `Gagal menghubungi Google Sheet: ${errorMsg}${tip}`,
+      };
+    }
+  }
+
+  /**
+   * Generates CSV format representing the monthly schedule & machine allocations.
+   */
+  static generateCsv(assignments: ShiftAssignment[], machines: Machine[]): string {
+    const rows: string[] = [];
+    rows.push('Tanggal,Sif,Kode Sif,Nama Perawat,Peran,No WhatsApp,Alokasi Mesin HD,Jumlah Mesin,Status Notifikasi,Catatan');
+
+    assignments.forEach((a) => {
+      const machineCodes = (a.assignedMachineIds || [])
+        .map((id) => machines.find((m) => m.id === id)?.code)
+        .filter(Boolean)
+        .join(';');
+
+      const leaderStr = a.isLeader ? 'PJ Sif' : 'Pelaksana';
+      const waStatus = a.isWhatsAppSent ? 'Terkirim' : 'Belum';
+      const shiftLabel = SHIFT_TYPE_INFO[a.shiftType]?.label || a.shiftType;
+      const shiftCode = SHIFT_TYPE_INFO[a.shiftType]?.code || a.shiftType;
+
+      rows.push(
+        `"${a.date}","${shiftLabel}","${shiftCode}","${a.nurseName}","${leaderStr}","${a.nursePhone}","${machineCodes}",${a.assignedMachineIds?.length || 0},"${waStatus}","${a.notes || ''}"`
+      );
+    });
+
+    return rows.join('\n');
+  }
+
+  /**
+   * Triggers browser download of CSV file.
+   */
+  static downloadCsvFile(monthStr: string, assignments: ShiftAssignment[], machines: Machine[]): void {
+    const csvContent = this.generateCsv(assignments, machines);
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `Jadwal_HD_${monthStr.replace(/\s+/g, '_')}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }
+
+  /**
+   * Exports monthly schedule matrix to CSV.
+   */
+  static exportMonthlyScheduleToCSV(monthStr: string, nurses: Nurse[], assignments: ShiftAssignment[]): void {
+    const activeNurses = nurses.filter((n) => n.isActive);
+    const parts = monthStr.split('-');
+    const year = parseInt(parts[0], 10) || new Date().getFullYear();
+    const month = parseInt(parts[1], 10) || (new Date().getMonth() + 1);
+    const daysInMonth = new Date(year, month, 0).getDate();
+
+    const headers = ['Nama Perawat', 'Jabatan'];
+    for (let d = 1; d <= daysInMonth; d++) {
+      headers.push(String(d));
+    }
+    headers.push('Total Sif');
+
+    const rows = [headers.join(',')];
+
+    activeNurses.forEach((nurse) => {
+      let totalWork = 0;
+      const row = [`"${nurse.name}"`, `"${nurse.role}"`];
+
+      for (let d = 1; d <= daysInMonth; d++) {
+        const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+        const assignment = assignments.find((a) => a.date === dateStr && a.nurseId === nurse.id);
+        const code = assignment ? SHIFT_TYPE_INFO[assignment.shiftType]?.code || assignment.shiftType : 'L';
+        if (assignment && (assignment.shiftType === 'PAGI' || assignment.shiftType === 'SIANG')) {
+          totalWork++;
+        }
+        row.push(`"${code}"`);
+      }
+      row.push(String(totalWork));
+      rows.push(row.join(','));
+    });
+
+    const csvContent = rows.join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `Jadwal_Matriks_HD_${monthStr}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }
+
+  /**
+   * Copies TSV table to Clipboard for pasting directly into Google Sheets / Excel.
+   */
+  static async copyTableToClipboard(assignments: ShiftAssignment[], machines: Machine[]): Promise<boolean> {
+    const rows: string[] = [];
+    rows.push('Tanggal\tSif\tNama Perawat\tPeran\tAlokasi Mesin HD\tJumlah Mesin\tNo WhatsApp\tCatatan');
+
+    assignments.forEach((a) => {
+      const machineCodes = (a.assignedMachineIds || [])
+        .map((id) => machines.find((m) => m.id === id)?.code)
+        .filter(Boolean)
+        .join(', ');
+      const leaderStr = a.isLeader ? 'PJ Sif' : 'Pelaksana';
+      const shiftLabel = SHIFT_TYPE_INFO[a.shiftType]?.label || a.shiftType;
+
+      rows.push(`${a.date}\t${shiftLabel}\t${a.nurseName}\t${leaderStr}\t${machineCodes}\t${a.assignedMachineIds?.length || 0}\t${a.nursePhone}\t${a.notes || ''}`);
+    });
+
+    try {
+      await navigator.clipboard.writeText(rows.join('\n'));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Ready-to-use Google Apps Script code for 2-Way Sync (GET & POST).
+   * Generates calendar matrix format matching .xlsx template with automatic conditional colors.
+   */
+  static getGoogleAppsScriptTemplate(): string {
+    return `// =============================================================================
+// GOOGLE APPS SCRIPT WEBHOOK 2-ARAH UNTUK HEMOSHIFT HD
+// Format Matriks Jadwal .xlsx (Kalender Bulanan) & Sinkronisasi Master HD
+// =============================================================================
+// CARA PEMASANGAN:
+// 1. Buat Spreadsheet baru di Google Sheets (buka https://sheets.new)
+// 2. Di menu atas, klik 'Extensions' (Ekstensi) > 'Apps Script'
+// 3. Hapus semua kode bawaan, lalu tempel (paste) seluruh kode ini
+// 4. Klik ikon Disket (Save / Simpan)
+// 5. Di kanan atas, klik 'Deploy' (Terapkan) > 'New deployment' (Penerapan baru)
+// 6. Pilih jenis: 'Web app'
+// 7. Konfigurasi:
+//    - Description: "HemoShift 2-Way Sync Matrix XLSX"
+//    - Execute as: "Me" (Email Google Anda)
+//    - Who has access: "Anyone" (Siapa saja)  <-- PENTING AGAR APLIKASI BISA AKSES
+// 8. Klik 'Deploy', izinkan otorisasi akun Google Anda
+// 9. Salin 'Web app URL' (akhiran /exec) dan tempelkan ke aplikasi HemoShift HD
+// =============================================================================
+
+function doPost(e) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var data = JSON.parse(e.postData.contents);
+    var timestamp = new Date().toISOString();
+
+    // Helper normalisasi tanggal untuk mencegah data tumpang tindih / terduplikasi
+    function parseDateToYMD(val) {
+      if (!val) return "";
+      if (val instanceof Date) {
+        var y = val.getFullYear();
+        var m = ("0" + (val.getMonth() + 1)).slice(-2);
+        var d = ("0" + val.getDate()).slice(-2);
+        return y + "-" + m + "-" + d;
+      }
+      var str = String(val).trim();
+      var isoMatch = str.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+      if (isoMatch) {
+        return isoMatch[1] + "-" + ("0" + isoMatch[2]).slice(-2) + "-" + ("0" + isoMatch[3]).slice(-2);
+      }
+      var dmyMatch = str.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})/);
+      if (dmyMatch) {
+        return dmyMatch[3] + "-" + ("0" + dmyMatch[2]).slice(-2) + "-" + ("0" + dmyMatch[1]).slice(-2);
+      }
+      return str.length >= 7 ? str.substring(0, 10) : str;
+    }
+
+    // Helper urutan shift: Shif Pagi didahulukan (rank 1), lalu Shif Siang (rank 2)
+    function getShiftSortRank(shiftStr, codeStr) {
+      var s = (String(shiftStr || '') + ' ' + String(codeStr || '')).toLowerCase();
+      if (s.indexOf('pagi') > -1 || s.indexOf(' p') > -1 || s === 'p') return 1;
+      if (s.indexOf('siang') > -1 || s.indexOf(' s') > -1 || s === 's') return 2;
+      if (s.indexOf('malam') > -1 || s.indexOf(' m') > -1 || s === 'm') return 3;
+      return 4;
+    }
+
+    // Helper urutan denah ruangan untuk Master Mesin
+    function getMachineDenahSortRank(code, bay) {
+      var c = String(code || '').toUpperCase().trim();
+      var b = String(bay || '').toUpperCase().trim();
+      var mA = c.match(/^A-?(\d+)/);
+      if (mA) return 100 + parseInt(mA[1], 10);
+      if (b.indexOf('AREA A') > -1) return 150;
+      var mB = c.match(/^B-?(\d+)/);
+      if (mB) return 200 + parseInt(mB[1], 10);
+      if (b.indexOf('AREA B') > -1) return 250;
+      var mC = c.match(/^C-?(\d+)/);
+      if (mC) return 300 + parseInt(mC[1], 10);
+      if (b.indexOf('AREA C') > -1) return 350;
+      var mD = c.match(/^D-?(\d+)/);
+      if (mD) return 400 + parseInt(mD[1], 10);
+      if (b.indexOf('AREA D') > -1) return 450;
+      var mE = c.match(/^E-?(\d+)/);
+      if (mE) return 500 + parseInt(mE[1], 10);
+      if (b.indexOf('AREA E') > -1) return 550;
+      var mF = c.match(/^F-?(\d+)/);
+      if (mF) return 600 + parseInt(mF[1], 10);
+      if (b.indexOf('AREA F') > -1) return 650;
+      var mIso = c.match(/^ISO[-\s]?(\d+)/);
+      if (mIso) return 700 + parseInt(mIso[1], 10);
+      if (b.indexOf('ISOLASI') > -1) return 750;
+      return 900;
+    }
+
+    // Helper urutan tugas khusus: PJ shif (1), BHP (2), Farmasi Logistik (3), Natrium RO (4), CITO (5), lainnya (99)
+    function getSpecialTaskRank(taskName) {
+      var t = String(taskName || '').toLowerCase().trim();
+      if (t.indexOf('pj') > -1 || t.indexOf('katim') > -1 || t.indexOf('ketua tim') > -1) return 1;
+      if (t.indexOf('bhp') > -1 || t.indexOf('habis pakai') > -1) return 2;
+      if (t.indexOf('farmasi') > -1 || t.indexOf('logistik') > -1 || t.indexOf('obat') > -1) return 3;
+      if (t.indexOf('natrium') > -1 || t.indexOf('ro') > -1 || t.indexOf('water') > -1) return 4;
+      if (t.indexOf('cito') > -1 || t.indexOf('emergency') > -1 || t.indexOf('darurat') > -1) return 5;
+      return 99;
+    }
+
+    // Helper ambil atau migrasi nama sheet lama ke nama sheet baru
+    function getOrCreateMigratedSheet(newName, oldAliases) {
+      var s = ss.getSheetByName(newName);
+      if (s) return s;
+      if (oldAliases && oldAliases.length) {
+        for (var a = 0; a < oldAliases.length; a++) {
+          var oldSheet = ss.getSheetByName(oldAliases[a]);
+          if (oldSheet) {
+            try {
+              oldSheet.setName(newName);
+              return oldSheet;
+            } catch(e) {}
+          }
+        }
+      }
+      return ss.insertSheet(newName);
+    }
+
+    // -------------------------------------------------------------
+    // 0. Aksi Khusus: Hapus Semua Riwayat Tugas Khusus
+    // -------------------------------------------------------------
+    if (data.action === 'CLEAR_SPECIAL_TASKS') {
+      var dutySchedSheetToClear = getOrCreateMigratedSheet("Tugas Khusus", ["Data tugas khusus", "Jadwal Tugas Khusus", "Data Tugas Khusus"]);
+      if (dutySchedSheetToClear) {
+        dutySchedSheetToClear.clear();
+        var dHeadersClean = [["No", "Tanggal", "Hari", "Sif", "Kode Sif", "Nama Perawat", "Tugas Khusus"]];
+        dutySchedSheetToClear.getRange(1, 1, 1, 7).setValues(dHeadersClean);
+        dutySchedSheetToClear.getRange(1, 1, 1, 7).setFontWeight("bold").setBackground("#7C3AED").setFontColor("#FFFFFF");
+      }
+      return ContentService.createTextOutput(JSON.stringify({
+        status: "success",
+        message: "Berhasil menghapus seluruh riwayat tugas khusus di tab Tugas Khusus Google Sheets!"
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // -------------------------------------------------------------
+    // 0b. Aksi Khusus: Sinkronisasi Langsung Tugas Khusus
+    // Berisi: No, Tanggal, Hari, Sif, Kode Sif, Nama Perawat, Tugas Khusus
+    // -------------------------------------------------------------
+    if (data.action === 'SYNC_SPECIAL_TASKS') {
+      var dutySchedSheetSync = getOrCreateMigratedSheet("Tugas Khusus", ["Data tugas khusus", "Jadwal Tugas Khusus", "Data Tugas Khusus"]);
+      var dHeadersSync = [["No", "Tanggal", "Hari", "Sif", "Kode Sif", "Nama Perawat", "Tugas Khusus"]];
+      var targetMonthSync = data.month || "";
+      var syncAllMonths = Boolean(data.syncAllMonths || !targetMonthSync || targetMonthSync === "all");
+      var dayNamesListSync = ["Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"];
+
+      // Map deduplikasi pintar: key = date + "_" + shiftCode + "_" + categoryLower + "_" + nurseNameLower
+      var dutyMapSync = {};
+
+      // 1. Baca data yang sudah ada di sheet
+      if (dutySchedSheetSync.getLastRow() > 1) {
+        var numOldColsSync = dutySchedSheetSync.getLastColumn();
+        var oldDutyValsSync = dutySchedSheetSync.getRange(2, 1, dutySchedSheetSync.getLastRow() - 1, numOldColsSync).getValues();
+        var hasNoCol = String(dutySchedSheetSync.getRange(1, 1).getValue() || "").trim().toLowerCase() === "no";
+        var col6HeaderSync = String(dutySchedSheetSync.getRange(1, 6).getValue() || "").toLowerCase();
+        var isNurseCol6Sync = col6HeaderSync.indexOf("perawat") > -1;
+
+        for (var os = 0; os < oldDutyValsSync.length; os++) {
+          var oRow = oldDutyValsSync[os];
+          var rawDate = hasNoCol ? oRow[1] : oRow[0];
+          var dRowDate = parseDateToYMD(rawDate);
+          if (dRowDate) {
+            // Jika sinkronisasi spesifik 1 bulan, data bulan lain (misal Oktober) tetap utuh di sheet
+            if (!targetMonthSync || syncAllMonths || dRowDate.indexOf(targetMonthSync) !== 0) {
+              var oDay = hasNoCol ? (oRow[2] || "") : (oRow[1] || "");
+              if (!oDay && dRowDate) {
+                var oDtSync = new Date(dRowDate);
+                oDay = isNaN(oDtSync.getDay()) ? "" : dayNamesListSync[oDtSync.getDay()];
+              }
+              var oShiftLabel = hasNoCol ? (oRow[3] || "Pagi") : (oRow[2] || "Pagi");
+              var oShiftCode = hasNoCol ? (oRow[4] || "P") : (oRow[3] || "P");
+              var oNurse = "";
+              var oCategory = "";
+
+              if (isNurseCol6Sync) {
+                // Format Baru (7 Kolom): No, Tanggal, Hari, Sif, Kode Sif, Nama Perawat, Tugas Khusus
+                oNurse = String(oRow[5] || "").trim();
+                oCategory = String(oRow[6] || "").trim();
+              } else if (hasNoCol) {
+                // Format Lama (9 Kolom): No, Tanggal, Hari, Sif, Kode Sif, Tugas Khusus (col 5), Nama Perawat (col 6)
+                oCategory = String(oRow[5] || "").trim();
+                oNurse = String(oRow[6] || "").trim();
+              } else {
+                oNurse = String(oRow[4] || "").trim();
+                oCategory = String(oRow[5] || "").trim();
+              }
+
+              if (oNurse && oCategory) {
+                var oKey = dRowDate + "_" + String(oShiftCode).toUpperCase() + "_" + oCategory.toLowerCase().trim() + "_" + oNurse.toLowerCase().trim();
+                dutyMapSync[oKey] = [
+                  0,
+                  dRowDate,
+                  oDay,
+                  oShiftLabel,
+                  oShiftCode,
+                  oNurse,
+                  oCategory
+                ];
+              }
+            }
+          }
+        }
+      }
+
+      // 2. Masukkan seluruh tugas baru dari payload (mendukung multi-bulan: September, Oktober, dst.)
+      var tasksToAddSync = data.dailySpecialTasks || data.specialTasks || [];
+      for (var tsi = 0; tsi < tasksToAddSync.length; tsi++) {
+        var tsItem = tasksToAddSync[tsi];
+        var tsDate = parseDateToYMD(tsItem.date || "");
+        var tsNurse = String(tsItem.nurseName || "").trim();
+        var tsCategory = String(tsItem.categoryName || tsItem.category || tsItem.title || "").trim();
+        if (tsDate && tsNurse && tsCategory) {
+          var tsDay = "";
+          var dtObjSync = new Date(tsDate);
+          tsDay = isNaN(dtObjSync.getDay()) ? "" : dayNamesListSync[dtObjSync.getDay()];
+          var sLabelSync = tsItem.shiftLabel || (String(tsItem.shift).toLowerCase() === "siang" ? "Siang" : "Pagi");
+          var sCodeSync = (String(tsItem.shift).toLowerCase() === "siang" || sLabelSync === "Siang") ? "S" : "P";
+          
+          var tKey = tsDate + "_" + sCodeSync + "_" + tsCategory.toLowerCase() + "_" + tsNurse.toLowerCase();
+          dutyMapSync[tKey] = [
+            0,
+            tsDate,
+            tsDay,
+            sLabelSync,
+            sCodeSync,
+            tsNurse,
+            tsCategory
+          ];
+        }
+      }
+
+      // 3. Konversi Map ke Array dan urutkan rapi secara kronologis
+      // Urutan: Tanggal kronologis -> Shif Pagi (1) lalu Siang (2) -> Prioritas Tugas Khusus -> Nama Perawat
+      var combinedDutyRowsSync = Object.keys(dutyMapSync).map(function(k) { return dutyMapSync[k]; });
+      combinedDutyRowsSync.sort(function(a, b) {
+        var dateA = String(a[1] || "");
+        var dateB = String(b[1] || "");
+        if (dateA !== dateB) {
+          return dateA.localeCompare(dateB);
+        }
+        var rankA = getShiftSortRank(a[3], a[4]);
+        var rankB = getShiftSortRank(b[3], b[4]);
+        if (rankA !== rankB) {
+          return rankA - rankB;
+        }
+        var taskRankA = getSpecialTaskRank(a[6]);
+        var taskRankB = getSpecialTaskRank(b[6]);
+        if (taskRankA !== taskRankB) {
+          return taskRankA - taskRankB;
+        }
+        return String(a[5] || "").localeCompare(String(b[5] || ""));
+      });
+
+      for (var si = 0; si < combinedDutyRowsSync.length; si++) {
+        combinedDutyRowsSync[si][0] = si + 1;
+      }
+
+      dutySchedSheetSync.clear();
+      dutySchedSheetSync.getRange(1, 1, 1, 7)
+        .setValues(dHeadersSync)
+        .setBackground("#7C3AED")
+        .setFontColor("#FFFFFF")
+        .setFontWeight("bold");
+
+      dutySchedSheetSync.setFrozenRows(1);
+
+      if (combinedDutyRowsSync.length > 0) {
+        dutySchedSheetSync.getRange(2, 1, combinedDutyRowsSync.length, 7).setValues(combinedDutyRowsSync);
+        dutySchedSheetSync.getRange(2, 1, combinedDutyRowsSync.length, 5).setHorizontalAlignment("center");
+        dutySchedSheetSync.autoResizeColumns(1, 7);
+      }
+
+      return ContentService.createTextOutput(JSON.stringify({
+        status: "success",
+        message: "Berhasil menyinkronkan " + combinedDutyRowsSync.length + " tugas khusus ke tab Tugas Khusus di Google Sheets!",
+        tasksCount: combinedDutyRowsSync.length,
+        timestamp: timestamp
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // -------------------------------------------------------------
+    // 6. Matrik Jadwal Perawat (Persis Template .xlsx Kalender)
+    // TAB BARU PER BULAN OTOMATIS: Tab bulan sebelumnya TIDAK DIHAPUS
+    // -------------------------------------------------------------
+    var matrixData = data.scheduleMatrix;
+    var monthTitle = (matrixData && matrixData.formattedMonthTitle) ? matrixData.formattedMonthTitle : "";
+    if (!monthTitle && data.month) {
+      var mParts = String(data.month).split("-");
+      if (mParts.length === 2) {
+        var mNum = parseInt(mParts[1], 10);
+        var yNum = mParts[0];
+        var mNames = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"];
+        monthTitle = (mNames[mNum - 1] || mParts[1]) + " " + yNum;
+      } else {
+        monthTitle = String(data.month);
+      }
+    }
+
+    if (matrixData && matrixData.headers && matrixData.rows) {
+      var sheetName = monthTitle ? ("Matrik Jadwal Perawat - " + monthTitle) : "Matrik Jadwal Perawat";
+
+      // CARI ATAU BUAT TAB (Dukungan migrasi nama lama)
+      var matrixSheet = getOrCreateMigratedSheet(sheetName, [
+        "Matrik Jadwal Perawat",
+        "Matriks HD - " + monthTitle,
+        "Matriks Jadwal HD",
+        "Matriks HD"
+      ]);
+      matrixSheet.clear();
+      try { matrixSheet.setTabColor("#1E40AF"); } catch(err) {}
+
+      var mHeaders = [matrixData.headers];
+      var mRows = matrixData.rows;
+      var totalCols = matrixData.headers.length;
+      var totalRows = mRows.length;
+      var daysInMonth = matrixData.daysInMonth || 31;
+
+      // Header Kolom (Warna Biru Medis Modern)
+      matrixSheet.getRange(1, 1, 1, totalCols)
+        .setValues(mHeaders)
+        .setBackground("#0061A4")
+        .setFontColor("#FFFFFF")
+        .setFontWeight("bold")
+        .setHorizontalAlignment("center")
+        .setVerticalAlignment("middle");
+
+      matrixSheet.setRowHeight(1, 32);
+
+      // Isi Data Jadwal Perawat
+      if (totalRows > 0) {
+        matrixSheet.getRange(2, 1, totalRows, totalCols).setValues(mRows);
+
+        // Perataan teks
+        matrixSheet.getRange(2, 1, totalRows, 1).setHorizontalAlignment("center"); // No
+        matrixSheet.getRange(2, 2, totalRows, 1).setHorizontalAlignment("left");   // Nama Perawat
+        matrixSheet.getRange(2, 3, totalRows, 2).setHorizontalAlignment("center"); // NIP & Peran
+        matrixSheet.getRange(2, 5, totalRows, totalCols - 4).setHorizontalAlignment("center"); // Hari 1..31 & Totals
+
+        // Lebar kolom rapi
+        matrixSheet.setColumnWidth(1, 38);  // No
+        matrixSheet.setColumnWidth(2, 220); // Nama Perawat
+        matrixSheet.setColumnWidth(3, 145); // NIP
+        matrixSheet.setColumnWidth(4, 130); // Peran (Kepala Ruang / PJ Shif / Perawat Pelaksana)
+        for (var c = 5; c <= 4 + daysInMonth; c++) {
+          matrixSheet.setColumnWidth(c, 34); // Tanggal 1..31
+        }
+        for (var sc = 5 + daysInMonth; sc <= totalCols; sc++) {
+          matrixSheet.setColumnWidth(sc, 72); // Kolom Total
+        }
+
+        // Kunci baris 1 dan kolom 1-4 (agar nama perawat tetap terlihat saat scroll ke tanggal akhir)
+        matrixSheet.setFrozenRows(1);
+        matrixSheet.setFrozenColumns(4);
+
+        // Pewarnaan Otomatis (Conditional Formatting)
+        var dayRange = matrixSheet.getRange(2, 5, totalRows, daysInMonth);
+        var rules = [];
+
+        // Pagi (P) - Biru Muda Sky
+        rules.push(SpreadsheetApp.newConditionalFormatRule()
+          .whenTextEqualTo("P")
+          .setBackground("#E0F2FE")
+          .setFontColor("#0369A1")
+          .setBold(true)
+          .setRanges([dayRange])
+          .build());
+
+        // Siang (S) - Oranye/Kuning Amber
+        rules.push(SpreadsheetApp.newConditionalFormatRule()
+          .whenTextEqualTo("S")
+          .setBackground("#FEF3C7")
+          .setFontColor("#B45309")
+          .setBold(true)
+          .setRanges([dayRange])
+          .build());
+
+        // 2 Shif (2S) - Indigo
+        rules.push(SpreadsheetApp.newConditionalFormatRule()
+          .whenTextEqualTo("2S")
+          .setBackground("#EEF2FF")
+          .setFontColor("#4338CA")
+          .setBold(true)
+          .setRanges([dayRange])
+          .build());
+
+        // Libur (L) - Abu-abu Elegan
+        rules.push(SpreadsheetApp.newConditionalFormatRule()
+          .whenTextEqualTo("L")
+          .setBackground("#F1F5F9")
+          .setFontColor("#64748B")
+          .setRanges([dayRange])
+          .build());
+
+        // Cuti (C) - Ungu
+        rules.push(SpreadsheetApp.newConditionalFormatRule()
+          .whenTextEqualTo("C")
+          .setBackground("#F3E8FF")
+          .setFontColor("#7E22CE")
+          .setBold(true)
+          .setRanges([dayRange])
+          .build());
+
+        // Izin (I) - Ungu Muda
+        rules.push(SpreadsheetApp.newConditionalFormatRule()
+          .whenTextEqualTo("I")
+          .setBackground("#EDE9FE")
+          .setFontColor("#6D28D9")
+          .setBold(true)
+          .setRanges([dayRange])
+          .build());
+
+        // Sakit (SK) - Merah
+        rules.push(SpreadsheetApp.newConditionalFormatRule()
+          .whenTextEqualTo("SK")
+          .setBackground("#FEE2E2")
+          .setFontColor("#B91C1C")
+          .setBold(true)
+          .setRanges([dayRange])
+          .build());
+
+        matrixSheet.setConditionalFormatRules(rules);
+      }
+
+      // -------------------------------------------------------------
+      // Baris Ringkasan Rekap Harian di Bawah Matriks (Persis Web)
+      // -------------------------------------------------------------
+      if (matrixData.summaryRows && matrixData.summaryRows.length > 0) {
+        var sRows = matrixData.summaryRows;
+        var startSummaryRow = totalRows + 3; // Beri 1 baris jarak pemisah
+        var divRow = startSummaryRow - 1;
+        matrixSheet.getRange(divRow, 1, 1, totalCols).setBackground("#F8FAFC");
+        matrixSheet.setRowHeight(divRow, 12);
+
+        matrixSheet.getRange(startSummaryRow, 1, sRows.length, totalCols).setValues(sRows);
+        matrixSheet.getRange(startSummaryRow, 1, sRows.length, totalCols).setHorizontalAlignment("center");
+        matrixSheet.getRange(startSummaryRow, 2, sRows.length, 1).setHorizontalAlignment("left");
+
+        // Styling baris Sif Pagi
+        matrixSheet.getRange(startSummaryRow, 1, 1, totalCols)
+          .setBackground("#E0F2FE")
+          .setFontWeight("bold")
+          .setFontColor("#0369A1");
+
+        // Styling baris Sif Siang
+        matrixSheet.getRange(startSummaryRow + 1, 1, 1, totalCols)
+          .setBackground("#FEF3C7")
+          .setFontWeight("bold")
+          .setFontColor("#B45309");
+
+        // Styling baris Perbandingan Harian (P : S)
+        matrixSheet.getRange(startSummaryRow + 2, 1, 1, totalCols)
+          .setBackground("#CCFBF1")
+          .setFontWeight("bold")
+          .setFontColor("#115E59");
+
+        // Styling baris Total Dinas
+        matrixSheet.getRange(startSummaryRow + 3, 1, 1, totalCols)
+          .setBackground("#E2E8F0")
+          .setFontWeight("bold")
+          .setFontColor("#0F172A");
+      }
+    }
+
+    // -------------------------------------------------------------
+    // 2. Simpan Master Perawat (Sheet: 'Master Perawat')
+    // -------------------------------------------------------------
+    if (data.nurses && Array.isArray(data.nurses)) {
+      var nurseSheet = getOrCreateMigratedSheet("Master Perawat", ["Data Perawat"]);
+      nurseSheet.clear();
+      
+      var nurseHeaders = [["ID Perawat", "Nama Perawat", "NIP", "Nomor WhatsApp", "Peran / Jabatan", "Status Aktif"]];
+      nurseSheet.getRange(1, 1, 1, 6)
+        .setValues(nurseHeaders)
+        .setBackground("#0D9488")
+        .setFontColor("#FFFFFF")
+        .setFontWeight("bold");
+
+      var nurseRows = [];
+      for (var n = 0; n < data.nurses.length; n++) {
+        var itemN = data.nurses[n];
+        var nName = (itemN.name || "").toUpperCase();
+        var nRole = (itemN.role || "").toUpperCase();
+        if (nName.indexOf("ADMIN") !== -1 || nRole === "ADMIN") continue;
+        var roleLabel = itemN.role === "KARU" ? "Kepala Ruang" : itemN.role === "KATIM" ? "PJ Shif" : "Perawat Pelaksana";
+        nurseRows.push([
+          itemN.id || (n + 1),
+          itemN.name || "",
+          itemN.nip || "-",
+          itemN.phone ? "'" + itemN.phone : "-",
+          roleLabel,
+          itemN.isActive !== false ? "AKTIF" : "NONAKTIF"
+        ]);
+      }
+
+      if (nurseRows.length > 0) {
+        nurseSheet.getRange(2, 1, nurseRows.length, 6).setValues(nurseRows);
+        nurseSheet.autoResizeColumns(1, 6);
+      }
+    }
+
+    // -------------------------------------------------------------
+    // 1. Simpan Master Mesin (Sheet: 'Master Mesin')
+    // Urut sesuai denah ruangan: Area A -> B -> C -> D -> E -> F -> Ruang Isolasi
+    // -------------------------------------------------------------
+    if (data.machines && Array.isArray(data.machines)) {
+      var machineSheet = getOrCreateMigratedSheet("Master Mesin", ["Data Mesin"]);
+      machineSheet.clear();
+
+      var machineHeaders = [["No", "Kode Mesin", "Nama Mesin", "Area / Denah Ruangan", "Kategori", "Status", "Merk & Model", "Keterangan Posisi Denah"]];
+      machineSheet.getRange(1, 1, 1, 8)
+        .setValues(machineHeaders)
+        .setBackground("#0284C7")
+        .setFontColor("#FFFFFF")
+        .setFontWeight("bold");
+
+      var machineRows = [];
+      for (var m = 0; m < data.machines.length; m++) {
+        var itemM = data.machines[m];
+        var mCode = itemM.code || "";
+        var mName = itemM.name || ("Mesin HD " + mCode);
+        var mBay = itemM.bay || itemM.zone || "Area A (Reguler)";
+        machineRows.push([
+          0,
+          mCode,
+          mName,
+          mBay,
+          itemM.category || "REGULER",
+          itemM.status || "AKTIF",
+          itemM.brandModel || itemM.model || "",
+          itemM.notes || ""
+        ]);
+      }
+
+      // Urutkan sesuai denah ruangan rumah sakit
+      machineRows.sort(function(a, b) {
+        var rankA = getMachineDenahSortRank(a[1], a[3]);
+        var rankB = getMachineDenahSortRank(b[1], b[3]);
+        if (rankA !== rankB) return rankA - rankB;
+        return String(a[1] || "").localeCompare(String(b[1] || ""));
+      });
+
+      for (var mi = 0; mi < machineRows.length; mi++) {
+        machineRows[mi][0] = mi + 1;
+      }
+
+      if (machineRows.length > 0) {
+        machineSheet.getRange(2, 1, machineRows.length, 8).setValues(machineRows);
+        machineSheet.getRange(2, 1, machineRows.length, 2).setHorizontalAlignment("center");
+        machineSheet.autoResizeColumns(1, 8);
+      }
+    }
+
+    // -------------------------------------------------------------
+    // Pembersihan Sheet 'Daftar Bay' (Redundan - Data Bay/Area sudah tercatat lengkap di Master Mesin)
+    // -------------------------------------------------------------
+    var oldBaySheet = ss.getSheetByName("Daftar Bay") || ss.getSheetByName("Daftar Bay / Area") || ss.getSheetByName("Bay / Area");
+    if (oldBaySheet && ss.getSheets().length > 1) {
+      try { ss.deleteSheet(oldBaySheet); } catch(e) {}
+    }
+
+    // -------------------------------------------------------------
+    // 4. Simpan Data Alokasi Mesin (Sheet: 'Data alokasi mesin')
+    // Catatan/log alokasi mesin shif pagi dan siang urut sesuai tanggal
+    // Hanya ada: No, Tanggal, Hari, Sif, Kode Sif, ID Perawat, Nama Perawat, Alokasi Mesin HD dan Jumlah Mesin
+    // -------------------------------------------------------------
+    if (data.assignments && Array.isArray(data.assignments)) {
+      var schedSheet = getOrCreateMigratedSheet("Data alokasi mesin", ["Alokasi Mesin", "Jadwal Alokasi Mesin", "Jadwal HD (Detail Mesin)", "Jadwal HD"]);
+      var targetMonthPrefix = data.month || "";
+      var schedHeaders = [["No", "Tanggal", "Hari", "Sif", "Kode Sif", "ID Perawat", "Nama Perawat", "Alokasi Mesin HD", "Jumlah Mesin"]];
+      var indDays = ["Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"];
+
+      var existingRows = [];
+      if (schedSheet.getLastRow() > 1) {
+        var numCols = schedSheet.getLastColumn();
+        var oldVals = schedSheet.getRange(2, 1, schedSheet.getLastRow() - 1, numCols).getValues();
+        var hasNoCol = String(schedSheet.getRange(1, 1).getValue() || "").trim().toLowerCase() === "no";
+        var col8Header = String(schedSheet.getRange(1, 8).getValue() || "").toLowerCase();
+        var isNew9Col = col8Header.indexOf("alokasi") > -1;
+
+        for (var ex = 0; ex < oldVals.length; ex++) {
+          var oldD = oldVals[ex];
+          var rowDate = parseDateToYMD(hasNoCol ? oldD[1] : oldD[0]);
+          if (!targetMonthPrefix || rowDate.indexOf(targetMonthPrefix) !== 0) {
+            var oDay = hasNoCol ? (oldD[2] || "") : "";
+            if (!oDay && rowDate) {
+              var oDt = new Date(rowDate);
+              oDay = isNaN(oDt.getDay()) ? "" : indDays[oDt.getDay()];
+            }
+            var oShiftType = hasNoCol ? (oldD[3] || "") : (oldD[1] || "");
+            var oShiftCode = hasNoCol ? (oldD[4] || "") : (oldD[2] || "");
+            var oNurseId = hasNoCol ? (oldD[5] || "") : (oldD[3] || "");
+            var oNurseName = hasNoCol ? (oldD[6] || "") : (oldD[4] || "");
+            
+            var oMachines = "";
+            var oCount = 0;
+
+            if (isNew9Col) {
+              // Format Baru (9 Kolom): No, Tanggal, Hari, Sif, Kode Sif, ID, Nama, Alokasi Mesin HD, Jumlah Mesin
+              oMachines = oldD[7] || "";
+              oCount = oldD[8] || 0;
+            } else if (hasNoCol && numCols >= 10) {
+              // Format Lama (12 Kolom): No(0), Tgl(1), Hari(2), Sif(3), Kode(4), ID(5), Nama(6), Peran(7), Alokasi(8), Jml(9)
+              oMachines = oldD[8] || "";
+              oCount = oldD[9] || 0;
+            } else {
+              oMachines = oldD[7] || "";
+              oCount = oldD[8] || 0;
+            }
+
+            existingRows.push([
+              0,
+              rowDate,
+              oDay,
+              oShiftType,
+              oShiftCode,
+              oNurseId,
+              oNurseName,
+              oMachines,
+              oCount
+            ]);
+          }
+        }
+      }
+
+      var newSchedRows = [];
+      for (var i = 0; i < data.assignments.length; i++) {
+        var itemA = data.assignments[i];
+        var mList = Array.isArray(itemA.machines) ? itemA.machines.join(", ") : (itemA.machines || "");
+        var aDateStr = itemA.date || "";
+        var aDayStr = "";
+        if (aDateStr) {
+          var aDtObj = new Date(aDateStr);
+          aDayStr = isNaN(aDtObj.getDay()) ? "" : indDays[aDtObj.getDay()];
+        }
+        newSchedRows.push([
+          0,
+          aDateStr,
+          aDayStr,
+          itemA.shiftType || "",
+          itemA.shiftCode || "",
+          itemA.nurseId || "",
+          itemA.nurseName || "",
+          mList,
+          itemA.machineCount || 0
+        ]);
+      }
+
+      var combinedRows = existingRows.concat(newSchedRows);
+      // Urutkan data berdasarkan Tanggal (kronologis), didahului Shif Pagi lalu Shif Siang, lalu Nama Perawat
+      combinedRows.sort(function(a, b) {
+        var dateA = String(a[1] || "");
+        var dateB = String(b[1] || "");
+        if (dateA !== dateB) {
+          return dateA.localeCompare(dateB);
+        }
+        var rankA = getShiftSortRank(a[3], a[4]);
+        var rankB = getShiftSortRank(b[3], b[4]);
+        if (rankA !== rankB) {
+          return rankA - rankB;
+        }
+        return String(a[6] || "").localeCompare(String(b[6] || ""));
+      });
+
+      for (var cr = 0; cr < combinedRows.length; cr++) {
+        combinedRows[cr][0] = cr + 1;
+      }
+
+      schedSheet.clear();
+      schedSheet.getRange(1, 1, 1, 9)
+        .setValues(schedHeaders)
+        .setBackground("#0061A4")
+        .setFontColor("#FFFFFF")
+        .setFontWeight("bold");
+
+      schedSheet.setFrozenRows(1);
+
+      if (combinedRows.length > 0) {
+        schedSheet.getRange(2, 1, combinedRows.length, 9).setValues(combinedRows);
+        schedSheet.getRange(2, 1, combinedRows.length, 6).setHorizontalAlignment("center");
+        schedSheet.getRange(2, 9, combinedRows.length, 1).setHorizontalAlignment("center");
+        schedSheet.autoResizeColumns(1, 9);
+      }
+    }
+
+    // -------------------------------------------------------------
+    // 3. Simpan Master Dokter (Sheet: 'Master Dokter')
+    // Berisi: ID Dokter, Nama Dokter, NIP, Nomor WhatsApp, Peran / Jabatan, Status Aktif
+    // -------------------------------------------------------------
+    if (data.doctors !== undefined) {
+      var docSheet = getOrCreateMigratedSheet("Master Dokter", ["Data Dokter"]);
+      docSheet.clear();
+
+      var docHeaders = [["ID Dokter", "Nama Dokter", "NIP", "Nomor WhatsApp", "Peran / Jabatan", "Status Aktif"]];
+      docSheet.getRange(1, 1, 1, 6)
+        .setValues(docHeaders)
+        .setBackground("#0F766E")
+        .setFontColor("#FFFFFF")
+        .setFontWeight("bold");
+
+      docSheet.setFrozenRows(1);
+
+      var docRows = [];
+      if (Array.isArray(data.doctors)) {
+        for (var d = 0; d < data.doctors.length; d++) {
+          var docItem = data.doctors[d];
+          var docRoleLabel = docItem.role === "DPJP" ? "DPJP / Penanggung Jawab HD" : "Dokter Ruangan HD";
+          docRows.push([
+            docItem.id || (d + 1),
+            docItem.name || "",
+            docItem.nip || docItem.sip || "-",
+            docItem.phone ? "'" + docItem.phone : "-",
+            docRoleLabel,
+            docItem.isActive !== false ? "AKTIF" : "NONAKTIF"
+          ]);
+        }
+      }
+
+      if (docRows.length === 0) {
+        docRows.push([1000, "", "-", "-", "Dokter Ruangan HD", "AKTIF"]);
+      }
+
+      docSheet.getRange(2, 1, docRows.length, 6).setValues(docRows);
+      docSheet.autoResizeColumns(1, 6);
+    }
+
+    // -------------------------------------------------------------
+    // 7. Simpan Matrik Jadwal Dokter (Sheet: 'Matrik Jadwal Dokter')
+    // Urutan kronologis tanggal (1..31) & Tampilan Visual Lengkap
+    // -------------------------------------------------------------
+    var docMatrixSheetName = "";
+    if (data.doctorDuties && Array.isArray(data.doctorDuties)) {
+      var indonesianDays = ["Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"];
+
+      // Helper status dinas
+      function getDoctorDutyStatus(pName, sName, isSun) {
+        if (isSun) return "Libur Rutin HD (Minggu)";
+        var hasP = pName && pName !== "-" && pName.indexOf("Libur") === -1;
+        var hasS = sName && sName !== "-" && sName.indexOf("Libur") === -1;
+        if (hasP && hasS) {
+          return pName === sName ? "2 Shif Sekaligus" : "Lengkap (2 Dr)";
+        }
+        if (hasP) return "Pagi Saja";
+        if (hasS) return "Siang Saja";
+        return "Belum Terisi";
+      }
+
+      // Normalisasi dan urutkan data tugas dokter berdasarkan tanggal ascending (1..31)
+      var sortedDuties = data.doctorDuties.slice().sort(function(a, b) {
+        var dA = parseDateToYMD(a.date);
+        var dB = parseDateToYMD(b.date);
+        return dA.localeCompare(dB);
+      });
+
+      // 7A. Buat Tab Khusus: 'Matrik Jadwal Dokter' atau 'Matrik Jadwal Dokter - [Bulan Tahun]'
+      docMatrixSheetName = monthTitle ? ("Matrik Jadwal Dokter - " + monthTitle) : "Matrik Jadwal Dokter";
+      var docMonthSheet = getOrCreateMigratedSheet(docMatrixSheetName, [
+        "Matrik Jadwal Dokter",
+        "Jadwal Dokter - " + monthTitle,
+        "Jadwal Dokter HD",
+        "Jadwal Dokter"
+      ]);
+      docMonthSheet.clear();
+      try { docMonthSheet.setTabColor("#0E7490"); } catch(err) {}
+
+      // 1. Judul Banner Atas
+      docMonthSheet.getRange("A1:G1").merge()
+        .setValue("MATRIK JADWAL SHIFT DOKTER HEMODIALISA - " + (monthTitle ? monthTitle.toUpperCase() : "HD"))
+        .setBackground("#0061A4")
+        .setFontColor("#FFFFFF")
+        .setFontWeight("bold")
+        .setFontSize(13)
+        .setHorizontalAlignment("center")
+        .setVerticalAlignment("middle");
+      docMonthSheet.setRowHeight(1, 36);
+
+      // 2. Sub-judul Banner
+      docMonthSheet.getRange("A2:G2").merge()
+        .setValue("RS HAPPY LAND MEDICAL CENTRE | Shif Pagi (07:00 - 14:00) & Shif Siang (13:30 - 20:30) | 1 Dokter per Shif")
+        .setBackground("#0284C7")
+        .setFontColor("#FFFFFF")
+        .setFontStyle("italic")
+        .setFontSize(9)
+        .setHorizontalAlignment("center")
+        .setVerticalAlignment("middle");
+      docMonthSheet.setRowHeight(2, 22);
+
+      // 3. Header Tabel
+      var docTableHeaders = [["No", "Tanggal", "Hari", "Dokter Shif Pagi (07:00 - 14:00)", "Dokter Shif Siang (13:30 - 20:30)", "Status Dinas", "Catatan"]];
+      docMonthSheet.getRange(3, 1, 1, 7)
+        .setValues(docTableHeaders)
+        .setBackground("#1E40AF")
+        .setFontColor("#FFFFFF")
+        .setFontWeight("bold")
+        .setFontSize(10)
+        .setHorizontalAlignment("center")
+        .setVerticalAlignment("middle");
+      docMonthSheet.setRowHeight(3, 26);
+
+      // 4. Data Baris Jadwal Dokter (Urut Tanggal 1..31)
+      var monthDocRows = [];
+      var monthRowBgs = [];
+      var monthRowFontColors = [];
+      var monthRowFontWeights = [];
+
+      for (var mi = 0; mi < sortedDuties.length; mi++) {
+        var item = sortedDuties[mi];
+        var dObj = item.date ? new Date(item.date) : null;
+        var isSun = item.isSunday !== undefined ? Boolean(item.isSunday) : (dObj ? dObj.getDay() === 0 : false);
+        var dayName = item.dayName || (dObj && !isNaN(dObj.getDay()) ? indonesianDays[dObj.getDay()] : "");
+
+        var pagiName = isSun ? "Libur Rutin HD (Hari Minggu)" : (item.pagiDoctorName || "-");
+        var siangName = isSun ? "Libur Rutin HD (Hari Minggu)" : (item.siangDoctorName || "-");
+        var dutyStatus = item.status || getDoctorDutyStatus(pagiName, siangName, isSun);
+        var noteText = item.notes || (isSun ? "Libur Rutin HD (Hari Minggu)" : "");
+
+        monthDocRows.push([
+          mi + 1,
+          item.date || "",
+          dayName,
+          pagiName,
+          siangName,
+          dutyStatus,
+          noteText
+        ]);
+
+        if (isSun) {
+          monthRowBgs.push(["#FFE4E6", "#FFE4E6", "#FFE4E6", "#FFE4E6", "#FFE4E6", "#FEE2E2", "#FFE4E6"]);
+          monthRowFontColors.push(["#9F1239", "#9F1239", "#9F1239", "#BE123C", "#BE123C", "#B91C1C", "#9F1239"]);
+          monthRowFontWeights.push(["bold", "normal", "bold", "normal", "normal", "bold", "normal"]);
+        } else {
+          var bgRow = mi % 2 === 1 ? "#F8FAFC" : "#FFFFFF";
+          var statusBg = "#F1F5F9";
+          var statusFont = "#334155";
+
+          if (dutyStatus === "Lengkap (2 Dr)") {
+            statusBg = "#D1FAE5"; statusFont = "#065F46";
+          } else if (dutyStatus === "2 Shif Sekaligus") {
+            statusBg = "#EDE9FE"; statusFont = "#5B21B6";
+          } else if (dutyStatus === "Pagi Saja" || dutyStatus === "Siang Saja") {
+            statusBg = "#FEF3C7"; statusFont = "#92400E";
+          } else if (dutyStatus === "Belum Terisi") {
+            statusBg = "#FFE4E6"; statusFont = "#9F1239";
+          }
+
+          monthRowBgs.push([bgRow, bgRow, bgRow, bgRow, bgRow, statusBg, bgRow]);
+          monthRowFontColors.push(["#64748B", "#1E293B", "#1E293B", "#0F172A", "#0F172A", statusFont, "#64748B"]);
+          monthRowFontWeights.push(["normal", "normal", "bold", "normal", "normal", "bold", "normal"]);
+        }
+      }
+
+      if (monthDocRows.length > 0) {
+        var dataRange = docMonthSheet.getRange(4, 1, monthDocRows.length, 7);
+        dataRange.setValues(monthDocRows);
+        dataRange.setBackgrounds(monthRowBgs);
+        dataRange.setFontColors(monthRowFontColors);
+        dataRange.setFontWeights(monthRowFontWeights);
+        dataRange.setVerticalAlignment("middle");
+
+        docMonthSheet.getRange(4, 1, monthDocRows.length, 3).setHorizontalAlignment("center");
+        docMonthSheet.getRange(4, 4, monthDocRows.length, 2).setHorizontalAlignment("left");
+        docMonthSheet.getRange(4, 6, monthDocRows.length, 1).setHorizontalAlignment("center");
+        docMonthSheet.getRange(4, 7, monthDocRows.length, 1).setHorizontalAlignment("left");
+
+        for (var rIdx = 0; rIdx < monthDocRows.length; rIdx++) {
+          docMonthSheet.setRowHeight(4 + rIdx, 24);
+        }
+
+        dataRange.setBorder(true, true, true, true, true, true, "#CBD5E1", SpreadsheetApp.BorderStyle.SOLID);
+      }
+
+      docMonthSheet.setFrozenRows(3);
+      docMonthSheet.autoResizeColumns(1, 7);
+
+      // 5. Rekapitulasi Beban Jaga Dokter Bulan Ini (Summary Table)
+      var startSummaryRow = 4 + monthDocRows.length + 2;
+      docMonthSheet.getRange(startSummaryRow, 1, 1, 6).merge()
+        .setValue("RINGKASAN BEBAN JAGA DOKTER - " + (monthTitle ? monthTitle.toUpperCase() : "HD"))
+        .setBackground("#334155")
+        .setFontColor("#FFFFFF")
+        .setFontWeight("bold")
+        .setFontSize(10)
+        .setHorizontalAlignment("center")
+        .setVerticalAlignment("middle");
+      docMonthSheet.setRowHeight(startSummaryRow, 24);
+
+      var summaryHeaders = [["No", "Nama Dokter", "Spesialisasi / Peran", "Total Dinas", "Shif Pagi", "Shif Siang"]];
+      docMonthSheet.getRange(startSummaryRow + 1, 1, 1, 6)
+        .setValues(summaryHeaders)
+        .setBackground("#475569")
+        .setFontColor("#FFFFFF")
+        .setFontWeight("bold")
+        .setFontSize(9)
+        .setHorizontalAlignment("center")
+        .setVerticalAlignment("middle");
+      docMonthSheet.setRowHeight(startSummaryRow + 1, 22);
+
+      var docStatsMap = {};
+      if (data.doctors && Array.isArray(data.doctors)) {
+        for (var docI = 0; docI < data.doctors.length; docI++) {
+          var docObj = data.doctors[docI];
+          docStatsMap[docObj.name] = {
+            name: docObj.name,
+            spec: docObj.specialization || "Dokter Ruangan HD",
+            total: 0,
+            pagi: 0,
+            siang: 0
+          };
+        }
+      }
+
+      for (var sk = 0; sk < sortedDuties.length; sk++) {
+        var sItem = sortedDuties[sk];
+        var sSun = sItem.isSunday !== undefined ? Boolean(sItem.isSunday) : false;
+        if (sSun) continue;
+
+        var pDoc = sItem.pagiDoctorName;
+        var sDoc = sItem.siangDoctorName;
+
+        if (pDoc && pDoc !== "-" && pDoc.indexOf("Libur") === -1) {
+          if (!docStatsMap[pDoc]) docStatsMap[pDoc] = { name: pDoc, spec: "Dokter HD", total: 0, pagi: 0, siang: 0 };
+          docStatsMap[pDoc].pagi++;
+          docStatsMap[pDoc].total++;
+        }
+        if (sDoc && sDoc !== "-" && sDoc.indexOf("Libur") === -1) {
+          if (!docStatsMap[sDoc]) docStatsMap[sDoc] = { name: sDoc, spec: "Dokter HD", total: 0, pagi: 0, siang: 0 };
+          docStatsMap[sDoc].siang++;
+          docStatsMap[sDoc].total++;
+        }
+      }
+
+      var docStatRows = [];
+      var docStatKeys = Object.keys(docStatsMap);
+      for (var dsk = 0; dsk < docStatKeys.length; dsk++) {
+        var stat = docStatsMap[docStatKeys[dsk]];
+        docStatRows.push([
+          dsk + 1,
+          stat.name,
+          stat.spec,
+          stat.total,
+          stat.pagi,
+          stat.siang
+        ]);
+      }
+
+      if (docStatRows.length > 0) {
+        var statRange = docMonthSheet.getRange(startSummaryRow + 2, 1, docStatRows.length, 6);
+        statRange.setValues(docStatRows);
+        statRange.setBackground("#F8FAFC");
+        statRange.setFontSize(9);
+        statRange.setBorder(true, true, true, true, true, true, "#E2E8F0", SpreadsheetApp.BorderStyle.SOLID);
+
+        docMonthSheet.getRange(startSummaryRow + 2, 1, docStatRows.length, 1).setHorizontalAlignment("center");
+        docMonthSheet.getRange(startSummaryRow + 2, 2, docStatRows.length, 2).setHorizontalAlignment("left");
+        docMonthSheet.getRange(startSummaryRow + 2, 4, docStatRows.length, 3).setHorizontalAlignment("center").setFontWeight("bold");
+      }
+    }
+
+    // -------------------------------------------------------------
+    // Pembersihan Sheet 'Master Tugas Khusus' (Redundan - Definisi sudah terkelola di sistem aplikasi & penugasan harian di 'Data tugas khusus')
+    // -------------------------------------------------------------
+    var oldMasterDutySheet = ss.getSheetByName("Master Tugas Khusus");
+    if (oldMasterDutySheet && ss.getSheets().length > 1) {
+      try { ss.deleteSheet(oldMasterDutySheet); } catch(e) {}
+    }
+
+    // -------------------------------------------------------------
+    // 5. Simpan Data Tugas Khusus (Sheet: 'Tugas Khusus')
+    // Berisi data Tugas Khusus yang sudah di-inputkan untuk kedua shif
+    // Hanya ada: No, Tanggal, Hari, Sif, Kode Sif, Nama Perawat, Tugas Khusus
+    // Urut sesuai tanggal dan shif pagi (PJ shif, BHP, Farmasi Logistik, Natrium RO lalu CITO)
+    // dilanjutkan shif siang (PJ shif, BHP, Farmasi Logistik, Natrium RO lalu CITO)
+    // -------------------------------------------------------------
+    var shouldSyncDutySheet = (!data.isPartialSync && (data.assignments || data.dailySpecialTasks || data.specialTasks)) ||
+                             (data.syncSpecialTasks === true) ||
+                             ((data.dailySpecialTasks || data.specialTasks) && data.syncSpecialTasks !== false);
+
+    if (shouldSyncDutySheet && ((data.assignments && Array.isArray(data.assignments)) || (data.dailySpecialTasks && Array.isArray(data.dailySpecialTasks)) || (data.specialTasks && Array.isArray(data.specialTasks)))) {
+      var dutySchedSheet = getOrCreateMigratedSheet("Tugas Khusus", ["Data tugas khusus", "Jadwal Tugas Khusus", "Data Tugas Khusus"]);
+      var dHeaders = [["No", "Tanggal", "Hari", "Sif", "Kode Sif", "Nama Perawat", "Tugas Khusus"]];
+      var targetMonthPrefix = data.month || "";
+      var dayNamesList = ["Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"];
+
+      var dutyMapAll = {};
+
+      // 1. Baca data existing di Google Sheet jika ada
+      if (dutySchedSheet.getLastRow() > 1) {
+        var numOldCols = dutySchedSheet.getLastColumn();
+        var oldDutyVals = dutySchedSheet.getRange(2, 1, dutySchedSheet.getLastRow() - 1, numOldCols).getValues();
+        var hasNoHeader = String(dutySchedSheet.getRange(1, 1).getValue() || "").trim().toLowerCase() === "no";
+        var col6Header = String(dutySchedSheet.getRange(1, 6).getValue() || "").toLowerCase();
+        var isNurseCol6 = col6Header.indexOf("perawat") > -1;
+
+        for (var od = 0; od < oldDutyVals.length; od++) {
+          var oldRow = oldDutyVals[od];
+          var rawOldDate = hasNoHeader ? oldRow[1] : oldRow[0];
+          var dutyRowDate = parseDateToYMD(rawOldDate);
+          if (dutyRowDate) {
+            // Jika menyinkronkan bulan tertentu (targetMonthPrefix), lewati data lama bulan tersebut agar data ter-update bersih tanpa menumpuk tugas lama
+            if (targetMonthPrefix && dutyRowDate.indexOf(targetMonthPrefix) === 0) {
+              continue;
+            }
+            // Tetap simpan riwayat bulan lain (misal Oktober) saat menyinkronkan September
+            var oDay = hasNoHeader ? (oldRow[2] || "") : "";
+            if (!oDay && dutyRowDate) {
+              var oDtObj = new Date(dutyRowDate);
+              oDay = isNaN(oDtObj.getDay()) ? "" : dayNamesList[oDtObj.getDay()];
+            }
+            var oShiftLabel = hasNoHeader ? (oldRow[3] || "Pagi") : (oldRow[2] || "Pagi");
+            var oShiftCode = hasNoHeader ? (oldRow[4] || "P") : (oldRow[3] || "P");
+            
+            var oNurse = "";
+            var oCategory = "";
+
+            if (isNurseCol6) {
+              // Format Baru (7 Kolom): No, Tanggal, Hari, Sif, Kode Sif, Nama Perawat, Tugas Khusus
+              oNurse = String(oldRow[5] || "").trim();
+              oCategory = String(oldRow[6] || "").trim();
+            } else if (hasNoHeader) {
+              // Format Lama: No, Tanggal, Hari, Sif, Kode Sif, Tugas Khusus (col 5), Nama Perawat (col 6)
+              oCategory = String(oldRow[5] || "").trim();
+              oNurse = String(oldRow[6] || "").trim();
+            } else {
+              oNurse = String(oldRow[4] || "").trim();
+              oCategory = String(oldRow[5] || "").trim();
+            }
+
+            if (oNurse && oCategory) {
+              var oKey = dutyRowDate + "_" + String(oShiftCode).toUpperCase() + "_" + oCategory.toLowerCase().trim() + "_" + oNurse.toLowerCase().trim();
+              dutyMapAll[oKey] = [
+                0,
+                dutyRowDate,
+                oDay,
+                oShiftLabel,
+                oShiftCode,
+                oNurse,
+                oCategory
+              ];
+            }
+          }
+        }
+      }
+
+      // 2. Prioritaskan data penugasan tugas khusus harian yang di-inputkan di tab Tugas Khusus (termasuk Oktober & bulan lain)
+      var primaryTasks = (data.dailySpecialTasks && Array.isArray(data.dailySpecialTasks) && data.dailySpecialTasks.length > 0)
+        ? data.dailySpecialTasks
+        : (data.specialTasks && Array.isArray(data.specialTasks))
+        ? data.specialTasks
+        : [];
+
+      for (var pt = 0; pt < primaryTasks.length; pt++) {
+        var pItem = primaryTasks[pt];
+        var pDate = parseDateToYMD(pItem.date || "");
+        var pNurse = String(pItem.nurseName || "").trim();
+        var pCategory = String(pItem.categoryName || pItem.category || pItem.title || "").trim();
+        if (pDate && pNurse && pCategory) {
+          var pDay = "";
+          var pDtObj = new Date(pDate);
+          pDay = isNaN(pDtObj.getDay()) ? "" : dayNamesList[pDtObj.getDay()];
+          var pShiftLabel = pItem.shiftLabel || (String(pItem.shift).toLowerCase() === "siang" ? "Siang" : "Pagi");
+          var pShiftCode = (String(pItem.shift).toLowerCase() === "siang" || pShiftLabel === "Siang") ? "S" : "P";
+
+          var pKey = pDate + "_" + pShiftCode + "_" + pCategory.toLowerCase() + "_" + pNurse.toLowerCase();
+          dutyMapAll[pKey] = [
+            0,
+            pDate,
+            pDay,
+            pShiftLabel,
+            pShiftCode,
+            pNurse,
+            pCategory
+          ];
+        }
+      }
+
+      // 3. Tambahkan penugasan dari matriks assignments (jika ada specialDuty spesifik dan belum tercatat)
+      if (data.assignments && Array.isArray(data.assignments)) {
+        for (var ai = 0; ai < data.assignments.length; ai++) {
+          var aRow = data.assignments[ai];
+          if (aRow.specialDuty && String(aRow.specialDuty).trim()) {
+            var aDate = parseDateToYMD(aRow.date || "");
+            var aNurse = String(aRow.nurseName || "").trim();
+            var aDuty = String(aRow.specialDuty).trim();
+            var aShiftCode = aRow.shiftCode || "P";
+            var aKey = aDate + "_" + aShiftCode + "_" + aDuty.toLowerCase() + "_" + aNurse.toLowerCase();
+            if (!dutyMapAll[aKey] && aDate && aNurse) {
+              var aDay = "";
+              if (aDate) {
+                var aDt = new Date(aDate);
+                aDay = isNaN(aDt.getDay()) ? "" : dayNamesList[aDt.getDay()];
+              }
+              dutyMapAll[aKey] = [
+                0,
+                aDate,
+                aDay,
+                aRow.shiftType || "Pagi",
+                aShiftCode,
+                aNurse,
+                aDuty
+              ];
+            }
+          }
+        }
+      }
+
+      var combinedDutyRows = Object.keys(dutyMapAll).map(function(k) { return dutyMapAll[k]; });
+
+      // Urutkan data berdasarkan:
+      // 1. Tanggal kronologis
+      // 2. Shif Pagi (rank 1) didahulukan, baru Shif Siang (rank 2)
+      // 3. Tugas Khusus: PJ shif (1), BHP (2), Farmasi Logistik (3), Natrium RO (4), CITO (5), lainnya (99)
+      //    (kolom indeks 6)
+      // 4. Nama Perawat (kolom indeks 5)
+      combinedDutyRows.sort(function(a, b) {
+        var dateA = String(a[1] || "");
+        var dateB = String(b[1] || "");
+        if (dateA !== dateB) {
+          return dateA.localeCompare(dateB);
+        }
+        var rankShiftA = getShiftSortRank(a[3], a[4]);
+        var rankShiftB = getShiftSortRank(b[3], b[4]);
+        if (rankShiftA !== rankShiftB) {
+          return rankShiftA - rankShiftB;
+        }
+        var taskRankA = getSpecialTaskRank(a[6]);
+        var taskRankB = getSpecialTaskRank(b[6]);
+        if (taskRankA !== taskRankB) {
+          return taskRankA - taskRankB;
+        }
+        return String(a[5] || "").localeCompare(String(b[5] || ""));
+      });
+
+      for (var dIdx = 0; dIdx < combinedDutyRows.length; dIdx++) {
+        combinedDutyRows[dIdx][0] = dIdx + 1;
+      }
+
+      dutySchedSheet.clear();
+      dutySchedSheet.getRange(1, 1, 1, 7)
+        .setValues(dHeaders)
+        .setBackground("#7C3AED")
+        .setFontColor("#FFFFFF")
+        .setFontWeight("bold");
+
+      dutySchedSheet.setFrozenRows(1);
+
+      if (combinedDutyRows.length > 0) {
+        dutySchedSheet.getRange(2, 1, combinedDutyRows.length, 7).setValues(combinedDutyRows);
+        dutySchedSheet.getRange(2, 1, combinedDutyRows.length, 5).setHorizontalAlignment("center");
+        dutySchedSheet.autoResizeColumns(1, 7);
+      }
+    }
+
+    // -------------------------------------------------------------
+    // RE-ORDER POSISI TAB LEMBAR KERJA SESUAI URUTAN BAKU (1 SAMPAI 7):
+    // 1. Master Mesin
+    // 2. Master Perawat
+    // 3. Master Dokter
+    // 4. Data alokasi mesin
+    // 5. Tugas Khusus
+    // 6. Matrik Jadwal Perawat
+    // 7. Matrik Jadwal Dokter
+    // -------------------------------------------------------------
+    var orderedTabList = [
+      "Master Mesin",
+      "Master Perawat",
+      "Master Dokter",
+      "Data alokasi mesin",
+      "Tugas Khusus",
+      (matrixSheet ? matrixSheet.getName() : (monthTitle ? ("Matrik Jadwal Perawat - " + monthTitle) : "Matrik Jadwal Perawat")),
+      (docMatrixSheetName || (monthTitle ? ("Matrik Jadwal Dokter - " + monthTitle) : "Matrik Jadwal Dokter"))
+    ];
+
+    var sheetPositionIndex = 1;
+    for (var ot = 0; ot < orderedTabList.length; ot++) {
+      var tabTargetName = orderedTabList[ot];
+      if (!tabTargetName) continue;
+      var foundTab = ss.getSheetByName(tabTargetName);
+      if (foundTab) {
+        try {
+          ss.setActiveSheet(foundTab);
+          ss.moveActiveSheet(sheetPositionIndex);
+          sheetPositionIndex++;
+        } catch(tabErr) {}
+      }
+    }
+
+    return ContentService.createTextOutput(JSON.stringify({
+      status: "success",
+      message: "Berhasil menyinkronkan data perawat, mesin, dokter, tugas khusus & jadwal HD ke Google Sheets!",
+      timestamp: timestamp
+    })).setMimeType(ContentService.MimeType.JSON);
+
+  } catch (err) {
+    return ContentService.createTextOutput(JSON.stringify({
+      status: "error",
+      message: err.toString()
+    })).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+// -------------------------------------------------------------
+// GET Endpoint: Membaca Seluruh Data Master & Matriks Jadwal untuk Aplikasi (Sinkronisasi 2-Arah)
+// -------------------------------------------------------------
+function doGet(e) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var paramMonth = (e && e.parameter && e.parameter.month) ? String(e.parameter.month).trim() : "";
+    var now = new Date();
+    var defaultYear = now.getFullYear();
+    var defaultMonth = now.getMonth() + 1;
+
+    // Helper untuk konversi objek Tanggal atau string tanggal ke format ISO YYYY-MM-DD
+    function formatCellDate(val) {
+      if (!val) return "";
+      if (val instanceof Date) {
+        var y = val.getFullYear();
+        var m = ("0" + (val.getMonth() + 1)).slice(-2);
+        var d = ("0" + val.getDate()).slice(-2);
+        return y + "-" + m + "-" + d;
+      }
+      var str = String(val).trim();
+      if (/^\\d{1,2}[\\/\\-]\\d{1,2}[\\/\\-]\\d{4}$/.test(str)) {
+        var parts = str.split(/[\\/\\-]/);
+        var p0 = ("0" + parts[0]).slice(-2);
+        var p1 = ("0" + parts[1]).slice(-2);
+        var p2 = parts[2];
+        return p2 + "-" + p1 + "-" + p0;
+      }
+      if (/^\\d{4}-\\d{2}-\\d{2}/.test(str)) {
+        return str.substring(0, 10);
+      }
+      return str;
+    }
+
+    if (paramMonth && paramMonth.indexOf("-") > -1) {
+      var mParts = paramMonth.split("-");
+      defaultYear = parseInt(mParts[0], 10) || defaultYear;
+      defaultMonth = parseInt(mParts[1], 10) || defaultMonth;
+    }
+
+    // 1. Baca Data Perawat
+    var nurses = [];
+    var nurseSheet = ss.getSheetByName("Master Perawat") || ss.getSheetByName("Data Perawat");
+    if (nurseSheet && nurseSheet.getLastRow() > 1) {
+      var nurseValues = nurseSheet.getRange(2, 1, nurseSheet.getLastRow() - 1, Math.min(nurseSheet.getLastColumn(), 8)).getValues();
+      for (var i = 0; i < nurseValues.length; i++) {
+        var r = nurseValues[i];
+        var name = String(r[1] || "").trim();
+        if (name) {
+          nurses.push({
+            id: Number(r[0]) || (i + 1),
+            name: name,
+            nip: String(r[2] || "").trim(),
+            phone: String(r[3] || "").replace(/^'/, "").trim(),
+            role: String(r[4] || "PELAKSANA").trim(),
+            isActive: String(r[5]).toUpperCase() !== "NONAKTIF",
+            specialDuty: r[6] ? String(r[6]).trim() : null,
+            defaultOffDay: r[7] !== "" && r[7] !== null && r[7] !== undefined ? Number(r[7]) : null,
+            skillLevel: "Senior",
+            isPermanent: true
+          });
+        }
+      }
+    }
+
+    // 2. Baca Data Mesin
+    var machines = [];
+    var machineSheet = ss.getSheetByName("Master Mesin") || ss.getSheetByName("Data Mesin");
+    if (machineSheet && machineSheet.getLastRow() > 1) {
+      var machineValues = machineSheet.getRange(2, 1, machineSheet.getLastRow() - 1, Math.min(machineSheet.getLastColumn(), 8)).getValues();
+      var isMasterMesinFormat = String(machineSheet.getRange(1, 1).getValue() || "").trim().toLowerCase() === "no";
+      for (var j = 0; j < machineValues.length; j++) {
+        var rm = machineValues[j];
+        var code = String(isMasterMesinFormat ? (rm[1] || "") : (rm[1] || rm[0] || "")).trim();
+        if (code) {
+          machines.push({
+            id: Number(rm[0]) || (j + 1),
+            code: code,
+            name: String(isMasterMesinFormat ? rm[2] : (rm[2] || ("Mesin " + code))).trim(),
+            bay: String(isMasterMesinFormat ? rm[3] : (rm[3] || "Area A (Reguler)")).trim(),
+            category: String(isMasterMesinFormat ? rm[4] : (rm[4] || "REGULER")).trim(),
+            status: String(isMasterMesinFormat ? rm[5] : (rm[5] || "AKTIF")).trim(),
+            brandModel: String(isMasterMesinFormat ? rm[6] : (rm[6] || "")).trim(),
+            notes: String(isMasterMesinFormat ? rm[7] : (rm[7] || "")).trim()
+          });
+        }
+      }
+    }
+
+    // 3. Baca Data Bay: Hanya bay/area yang memiliki mesin terpasang
+    var bays = [];
+    var baySet = {};
+    for (var mb = 0; mb < machines.length; mb++) {
+      var mBay = machines[mb].bay || machines[mb].zone;
+      if (mBay && !baySet[mBay]) {
+        baySet[mBay] = true;
+        bays.push(mBay);
+      }
+    }
+
+    // 4. Baca Master Tugas Khusus
+    var specialDuties = [];
+    var sdSheetRead = ss.getSheetByName("Master Tugas Khusus") || ss.getSheetByName("Master Opsi Tugas Khusus");
+    if (sdSheetRead && sdSheetRead.getLastRow() > 1) {
+      var sdVals = sdSheetRead.getRange(2, 1, sdSheetRead.getLastRow() - 1, 7).getValues();
+      for (var sdi = 0; sdi < sdVals.length; sdi++) {
+        var sRow = sdVals[sdi];
+        var sCode = String(sRow[0] || "").trim().toUpperCase();
+        if (sCode) {
+          specialDuties.push({
+            code: sCode,
+            shortName: String(sRow[1] || sCode).trim(),
+            label: String(sRow[2] || ("Tugas Khusus " + sCode)).trim(),
+            description: String(sRow[3] || "").trim(),
+            colorName: String(sRow[4] || "Biru").trim(),
+            dotColorHex: String(sRow[5] || "#3b82f6").trim(),
+            isCustom: String(sRow[6] || "").toLowerCase() === "kustom"
+          });
+        }
+      }
+    }
+
+    // 5. Peta Alokasi Mesin dari Sheet 'Data alokasi mesin' dan Tugas Khusus dari Sheet 'Tugas Khusus'
+    var machineMap = {};
+    var dutyMap = {};
+    var detailSheet = ss.getSheetByName("Data alokasi mesin") || ss.getSheetByName("Alokasi Mesin") || ss.getSheetByName("Jadwal Alokasi Mesin") || ss.getSheetByName("Jadwal HD (Detail Mesin)") || ss.getSheetByName("Jadwal HD");
+    if (detailSheet && detailSheet.getLastRow() > 1) {
+      var numColsD = Math.min(detailSheet.getLastColumn(), 12);
+      var detailVals = detailSheet.getRange(2, 1, detailSheet.getLastRow() - 1, numColsD).getValues();
+      var hasNoColDetail = String(detailSheet.getRange(1, 1).getValue() || "").trim().toLowerCase() === "no";
+      var col8HeaderD = String(detailSheet.getRange(1, 8).getValue() || "").toLowerCase();
+      var isNew9ColD = col8HeaderD.indexOf("alokasi") > -1;
+
+      for (var d = 0; d < detailVals.length; d++) {
+        var dr = detailVals[d];
+        var dDate = formatCellDate(hasNoColDetail ? dr[1] : dr[0]);
+        var dNurse = String(hasNoColDetail ? (dr[6] || "") : (dr[5] || "")).trim().toLowerCase();
+        var dMachinesStr = "";
+        if (isNew9ColD) {
+          dMachinesStr = String(dr[7] || "");
+        } else if (hasNoColDetail && numColsD >= 10) {
+          dMachinesStr = String(dr[8] || "");
+        } else {
+          dMachinesStr = String(dr[7] || dr[8] || "");
+        }
+        var dMachines = dMachinesStr.split(/[,;\s]+/).filter(Boolean);
+        if (dDate && dNurse) {
+          var key = dDate + "_" + dNurse;
+          machineMap[key] = dMachines;
+        }
+      }
+    }
+
+    // Baca tugas khusus HANYA dari sheet 'Tugas Khusus' (No, Tanggal, Hari, Sif, Kode Sif, Nama Perawat, Tugas Khusus)
+    var dutySchedSheetRead = ss.getSheetByName("Tugas Khusus") || ss.getSheetByName("Data tugas khusus") || ss.getSheetByName("Jadwal Tugas Khusus");
+    if (dutySchedSheetRead && dutySchedSheetRead.getLastRow() > 1) {
+      var numReadCols = Math.min(dutySchedSheetRead.getLastColumn(), 9);
+      var dutySchedVals = dutySchedSheetRead.getRange(2, 1, dutySchedSheetRead.getLastRow() - 1, numReadCols).getValues();
+      var hasNoColDuty = String(dutySchedSheetRead.getRange(1, 1).getValue() || "").trim().toLowerCase() === "no";
+      var col6HeaderDuty = String(dutySchedSheetRead.getRange(1, 6).getValue() || "").toLowerCase();
+      var isNurseCol6Duty = col6HeaderDuty.indexOf("perawat") > -1;
+
+      for (var dsi = 0; dsi < dutySchedVals.length; dsi++) {
+        var dsr = dutySchedVals[dsi];
+        var dsDate = formatCellDate(hasNoColDuty ? dsr[1] : dsr[0]);
+        var dsNurse = "";
+        var dsDuty = "";
+
+        if (isNurseCol6Duty) {
+          // Format Baru (7 Kolom): No, Tanggal, Hari, Sif, Kode Sif, Nama Perawat (col 5), Tugas Khusus (col 6)
+          dsNurse = String(dsr[5] || "").trim().toLowerCase();
+          dsDuty = String(dsr[6] || "").trim();
+        } else {
+          // Format Lama
+          dsNurse = String(hasNoColDuty ? (dsr[6] || "") : (dsr[4] || "")).trim().toLowerCase();
+          dsDuty = String(hasNoColDuty ? (dsr[5] || "") : (dsr[6] || "")).trim();
+        }
+
+        if (dsDate && dsNurse && dsDuty) {
+          var dsKey = dsDate + "_" + dsNurse;
+          if (!dutyMap[dsKey]) {
+            dutyMap[dsKey] = dsDuty;
+          } else if (dutyMap[dsKey].toLowerCase().indexOf(dsDuty.toLowerCase()) === -1) {
+            dutyMap[dsKey] = dutyMap[dsKey] + ", " + dsDuty;
+          }
+        }
+      }
+    }
+
+    // 6. Baca Jadwal Perawat: Prioritas baca tab khusus bulan (misal 'Matrik Jadwal Perawat - September 2026')
+    var assignments = [];
+    var matrixSheet = null;
+
+    if (paramMonth) {
+      var mNames = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"];
+      var expectedTitle = "";
+      if (paramMonth.indexOf("-") > -1) {
+        var pParts = paramMonth.split("-");
+        var pYear = pParts[0];
+        var pMonthNum = parseInt(pParts[1], 10);
+        if (pMonthNum >= 1 && pMonthNum <= 12) {
+          expectedTitle = mNames[pMonthNum - 1] + " " + pYear;
+        }
+      }
+
+      if (expectedTitle) {
+        matrixSheet = ss.getSheetByName("Matrik Jadwal Perawat - " + expectedTitle) ||
+                      ss.getSheetByName("Matriks HD - " + expectedTitle) ||
+                      ss.getSheetByName("Matriks Jadwal - " + expectedTitle) ||
+                      ss.getSheetByName("Matriks HD " + expectedTitle);
+      }
+      if (!matrixSheet) {
+        matrixSheet = ss.getSheetByName("Matrik Jadwal Perawat - " + paramMonth) ||
+                      ss.getSheetByName("Matriks HD - " + paramMonth) ||
+                      ss.getSheetByName("Matriks Jadwal " + paramMonth) ||
+                      ss.getSheetByName("Jadwal " + paramMonth);
+      }
+    }
+
+    if (!matrixSheet) {
+      matrixSheet = ss.getSheetByName("Matrik Jadwal Perawat") || ss.getSheetByName("Matriks Jadwal HD");
+    }
+
+    // Jika belum ketemu, cari tab pertama yang namanya berawalan 'Matrik Jadwal Perawat' atau 'Matriks HD'
+    if (!matrixSheet) {
+      var allSheets = ss.getSheets();
+      for (var s = 0; s < allSheets.length; s++) {
+        var sName = allSheets[s].getName();
+        if (sName.indexOf("Matrik Jadwal Perawat") === 0 || sName.indexOf("Matriks HD") === 0) {
+          matrixSheet = allSheets[s];
+          break;
+        }
+      }
+    }
+
+    if (matrixSheet && matrixSheet.getLastRow() > 1) {
+      var mHeaders = matrixSheet.getRange(1, 1, 1, matrixSheet.getLastColumn()).getValues()[0];
+      var mData = matrixSheet.getRange(2, 1, matrixSheet.getLastRow() - 1, matrixSheet.getLastColumn()).getValues();
+
+      // Cari kolom hari (1..31)
+      var dayCols = [];
+      for (var col = 0; col < mHeaders.length; col++) {
+        var hVal = String(mHeaders[col] || "").trim();
+        var num = parseInt(hVal, 10);
+        if (!isNaN(num) && num >= 1 && num <= 31) {
+          dayCols.push({ colIndex: col, day: num });
+        }
+      }
+
+      // Cari kolom nama perawat (biasanya kolom 2, index 1)
+      var nameCol = 1;
+      for (var hc = 0; hc < Math.min(mHeaders.length, 4); hc++) {
+        var colNameStr = String(mHeaders[hc] || "").toLowerCase();
+        if (colNameStr.indexOf("nama") > -1) {
+          nameCol = hc;
+          break;
+        }
+      }
+
+      for (var rIdx = 0; rIdx < mData.length; rIdx++) {
+        var row = mData[rIdx];
+        var nurseName = String(row[nameCol] || "").trim();
+        if (!nurseName) continue;
+
+        // Lewati baris ringkasan rekapitulasi harian / footer di bawah tabel
+        var lowerName = nurseName.toLowerCase();
+        if (lowerName.indexOf("sif pagi") > -1 ||
+            lowerName.indexOf("sif siang") > -1 ||
+            lowerName.indexOf("katim") > -1 ||
+            lowerName.indexOf("total dinas") > -1 ||
+            lowerName.indexOf("rekap") > -1) {
+          continue;
+        }
+
+        // Cari ID perawat yang cocok jika ada
+        var matchedNurse = null;
+        for (var nIdx = 0; nIdx < nurses.length; nIdx++) {
+          if (nurses[nIdx].name.toLowerCase() === nurseName.toLowerCase() ||
+              nurseName.toLowerCase().indexOf(nurses[nIdx].name.toLowerCase()) > -1) {
+            matchedNurse = nurses[nIdx];
+            break;
+          }
+        }
+        var nurseId = matchedNurse ? matchedNurse.id : (1000 + rIdx);
+        var isLeader = matchedNurse ? (matchedNurse.role === "KATIM" || matchedNurse.role === "KARU") : false;
+
+        for (var dayIdx = 0; dayIdx < dayCols.length; dayIdx++) {
+          var dInfo = dayCols[dayIdx];
+          var cellCode = String(row[dInfo.colIndex] || "").trim().toUpperCase();
+          if (!cellCode) cellCode = "L";
+
+          var shiftType = "LIBUR";
+          var shiftCode = "L";
+
+          if (cellCode.indexOf("P") === 0 || cellCode.indexOf("PAGI") > -1) {
+            shiftType = "PAGI";
+            shiftCode = "P";
+          } else if (cellCode.indexOf("S") === 0 && cellCode.indexOf("SK") !== 0 && cellCode.indexOf("SAKIT") === -1) {
+            shiftType = "SIANG";
+            shiftCode = "S";
+          } else if (cellCode.indexOf("C") === 0 || cellCode.indexOf("CUTI") > -1) {
+            shiftType = "CUTI";
+            shiftCode = "C";
+          } else if (cellCode.indexOf("SK") === 0 || cellCode.indexOf("SAKIT") > -1) {
+            shiftType = "SAKIT";
+            shiftCode = "SK";
+          }
+
+          var dateStr = defaultYear + "-" + ("0" + defaultMonth).slice(-2) + "-" + ("0" + dInfo.day).slice(-2);
+          var key = dateStr + "_" + nurseName.toLowerCase();
+          var mList = machineMap[key] || [];
+          var sDuty = dutyMap[key] || (matchedNurse ? matchedNurse.specialDuty : null);
+
+          assignments.push({
+            id: "asg-" + dateStr + "-" + nurseId,
+            date: dateStr,
+            shiftType: shiftType,
+            shiftCode: shiftCode,
+            nurseId: nurseId,
+            nurseName: nurseName,
+            isLeader: isLeader,
+            machines: mList,
+            machineCount: mList.length,
+            specialDuty: sDuty,
+            notes: (cellCode !== "P" && cellCode !== "S" && cellCode !== "L" && cellCode !== "C" && cellCode !== "SK") ? cellCode : ""
+          });
+        }
+      }
+    } else if (detailSheet && detailSheet.getLastRow() > 1) {
+      // Fallback baca format baris jika Matriks belum dibuat
+      var schedValues = detailSheet.getRange(2, 1, detailSheet.getLastRow() - 1, 11).getValues();
+      for (var k = 0; k < schedValues.length; k++) {
+        var sa = schedValues[k];
+        var aDate = formatCellDate(sa[1]);
+        var aNurse = String(sa[5] || "").trim();
+        if (aDate && aNurse) {
+          assignments.push({
+            id: String(sa[0] || (aDate + "-" + k)),
+            date: aDate,
+            shiftType: String(sa[2] || "LIBUR").trim(),
+            shiftCode: String(sa[3] || "L").trim(),
+            nurseId: Number(sa[4]) || 0,
+            nurseName: aNurse,
+            isLeader: String(sa[6]).indexOf("PJ") > -1 || String(sa[6]).indexOf("Katim") > -1,
+            machines: String(sa[7] || "").split(/[,;\\s]+/).filter(Boolean),
+            specialDuty: sa[9] ? String(sa[9]).trim() : null,
+            notes: String(sa[10] || "").trim()
+          });
+        }
+      }
+    }
+
+    // 7. Baca Data Dokter
+    var doctors = [];
+    var docSheet = ss.getSheetByName("Master Dokter") || ss.getSheetByName("Data Dokter");
+    if (docSheet && docSheet.getLastRow() > 1) {
+      var docVals = docSheet.getRange(2, 1, docSheet.getLastRow() - 1, Math.min(docSheet.getLastColumn(), 7)).getValues();
+      for (var di = 0; di < docVals.length; di++) {
+        var dr = docVals[di];
+        var dName = String(dr[1] || "").trim();
+        if (dName) {
+          doctors.push({
+            id: Number(dr[0]) || (di + 1),
+            name: dName,
+            sip: String(dr[2] || "").trim(),
+            phone: String(dr[3] || "").replace(/^'/, "").trim(),
+            role: String(dr[4] || "DOKTER_RUANGAN").trim(),
+            specialization: String(dr[5] || "").trim(),
+            isActive: String(dr[6] || dr[5] || "").toUpperCase() !== "NONAKTIF"
+          });
+        }
+      }
+    }
+
+    // 8. Baca Matrik Jadwal Dokter HD
+    var doctorDuties = [];
+    var dutySheet = (expectedTitle ? ss.getSheetByName("Matrik Jadwal Dokter - " + expectedTitle) : null) ||
+                    ss.getSheetByName("Matrik Jadwal Dokter") ||
+                    (expectedTitle ? ss.getSheetByName("Jadwal Dokter - " + expectedTitle) : null) ||
+                    ss.getSheetByName("Jadwal Dokter HD") ||
+                    ss.getSheetByName("Jadwal Dokter");
+    if (dutySheet && dutySheet.getLastRow() > 1) {
+      var lastDutyCol = Math.max(dutySheet.getLastColumn(), 7);
+      var dutyVals = dutySheet.getRange(2, 1, dutySheet.getLastRow() - 1, lastDutyCol).getValues();
+      var firstHdr = String(dutySheet.getRange(1, 1).getValue() || "").trim().toLowerCase();
+      var hasNoCol = firstHdr === "no" || firstHdr.indexOf("jadwal") > -1;
+      var startRowIdx = 0;
+      // Jika ada header banner 3 baris
+      for (var hi = 0; hi < Math.min(dutyVals.length, 4); hi++) {
+        var cellVal0 = String(dutyVals[hi][0] || "").trim().toLowerCase();
+        if (cellVal0 === "1" || cellVal0 === 1) {
+          startRowIdx = hi;
+          break;
+        }
+      }
+      var dateIdx = 1;
+      var pagiIdx = 3;
+      var siangIdx = 4;
+      var notesIdx = 6;
+      var idPagiIdx = 7;
+      var idSiangIdx = 8;
+
+      for (var dy = startRowIdx; dy < dutyVals.length; dy++) {
+        var dRow = dutyVals[dy];
+        var dyDate = formatCellDate(dRow[dateIdx]);
+
+        if (dyDate && dyDate.indexOf("-") > -1) {
+          doctorDuties.push({
+            date: dyDate,
+            pagiDoctorName: String(dRow[pagiIdx] || "-").trim(),
+            siangDoctorName: String(dRow[siangIdx] || "-").trim(),
+            pagiDoctorId: Number(dRow[idPagiIdx]) || null,
+            siangDoctorId: Number(dRow[idSiangIdx]) || null,
+            notes: String(dRow[notesIdx] || "").trim()
+          });
+        }
+      }
+    }
+
+    return ContentService.createTextOutput(JSON.stringify({
+      status: "success",
+      nurses: nurses,
+      machines: machines,
+      bays: bays,
+      specialDutyOptions: specialDuties,
+      assignments: assignments,
+      doctors: doctors,
+      doctorDuties: doctorDuties,
+      timestamp: new Date().toISOString()
+    })).setMimeType(ContentService.MimeType.JSON);
+
+  } catch (err) {
+    return ContentService.createTextOutput(JSON.stringify({
+      status: "error",
+      message: err.toString()
+    })).setMimeType(ContentService.MimeType.JSON);
+  }
+}`;
+  }
+
+  /**
+   * Ekspor Daftar Dokter Jaga HD ke format file CSV
+   */
+  static exportDoctorsToCSV(doctors: Doctor[]) {
+    const headers = ['ID', 'Nama Dokter', 'SIP', 'No WhatsApp', 'Peran', 'Spesialisasi', 'Status'];
+    const rows = [headers.join(',')];
+    doctors.forEach((d) => {
+      rows.push([
+        d.id,
+        `"${(d.name || '').replace(/"/g, '""')}"`,
+        `"${(d.sip || '').replace(/"/g, '""')}"`,
+        `"'${d.phone || ''}"`,
+        `"${d.role}"`,
+        `"${(d.specialization || '').replace(/"/g, '""')}"`,
+        d.isActive !== false ? 'AKTIF' : 'NONAKTIF',
+      ].join(','));
+    });
+
+    const csvContent = 'data:text/csv;charset=utf-8,\uFEFF' + rows.join('\n');
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement('a');
+    link.setAttribute('href', encodedUri);
+    link.setAttribute('download', `Master_Dokter_HD_${new Date().toISOString().slice(0, 10)}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }
+
+  /**
+   * Ekspor Jadwal Dokter Jaga HD ke format file CSV
+   */
+  static exportDoctorScheduleToCSV(
+    monthString: string,
+    doctorDuties: Record<string, DoctorShiftDuty>,
+    doctors: Doctor[]
+  ) {
+    const parts = monthString.split('-');
+    const year = parseInt(parts[0], 10) || new Date().getFullYear();
+    const month = parseInt(parts[1], 10) || new Date().getMonth() + 1;
+    const daysInMonth = new Date(year, month, 0).getDate();
+
+    const headers = ['No', 'Tanggal', 'Hari', 'Dokter Shift Pagi (07:00 - 14:00)', 'Dokter Shift Siang (13:30 - 20:30)', 'Status Dinas', 'Catatan'];
+    const rows = [headers.join(',')];
+
+    const dayNames = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+
+    for (let d = 1; d <= daysInMonth; d++) {
+      const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      const dayOfWeek = new Date(year, month - 1, d).getDay();
+      const isSunday = dayOfWeek === 0;
+      const duty = doctorDuties[dateStr];
+
+      const rawPagi = duty?.pagiDoctorName || (duty?.pagiDoctorId ? doctors.find((doc) => doc.id === duty.pagiDoctorId)?.name : '-') || '-';
+      const rawSiang = duty?.siangDoctorName || (duty?.siangDoctorId ? doctors.find((doc) => doc.id === duty.siangDoctorId)?.name : '-') || '-';
+      const pagiDoc = isSunday ? '-' : rawPagi;
+      const siangDoc = isSunday ? '-' : rawSiang;
+
+      let status = 'Belum Terisi';
+      if (isSunday) {
+        status = 'Libur Rutin HD (Minggu)';
+      } else if (pagiDoc !== '-' && siangDoc !== '-') {
+        status = pagiDoc === siangDoc ? '2 Shif Sekaligus' : 'Lengkap (2 Dr)';
+      } else if (pagiDoc !== '-') {
+        status = 'Pagi Saja';
+      } else if (siangDoc !== '-') {
+        status = 'Siang Saja';
+      }
+
+      const notes = (isSunday ? 'Libur Rutin HD (Hari Minggu)' : (duty?.notes || '')).replace(/"/g, '""');
+
+      rows.push([d, dateStr, dayNames[dayOfWeek], `"${pagiDoc}"`, `"${siangDoc}"`, `"${status}"`, `"${notes}"`].join(','));
+    }
+
+    const csvContent = 'data:text/csv;charset=utf-8,\uFEFF' + rows.join('\n');
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement('a');
+    link.setAttribute('href', encodedUri);
+    link.setAttribute('download', `Jadwal_Dokter_HD_${monthString}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }
+}
+
