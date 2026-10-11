@@ -805,10 +805,11 @@ export interface OffEmployeeWhatsAppOptions {
   dateStr: string;
   shiftType?: ShiftType;
   specialTaskName?: string;
+  hasCito?: boolean;
 }
 
 export function generateOffEmployeeWhatsAppMessage(options: OffEmployeeWhatsAppOptions): string {
-  const { employee, dateStr, shiftType = 'libur', specialTaskName } = options;
+  const { employee, dateStr, shiftType = 'libur', specialTaskName, hasCito } = options;
   const formattedDate = formatIndonesianDateWithDay(dateStr);
 
   const cleanShift = String(shiftType || 'libur').toLowerCase();
@@ -821,17 +822,38 @@ export function generateOffEmployeeWhatsAppMessage(options: OffEmployeeWhatsAppO
     sifText = '🌴 SAKIT / ISTIRAHAT MEDIS';
   }
 
+  const isCitoDuty = Boolean(
+    hasCito ||
+    (specialTaskName && specialTaskName.toLowerCase().includes('cito')) ||
+    (employee.specialDuty && employee.specialDuty.toLowerCase().includes('cito'))
+  );
+
+  if (isCitoDuty) {
+    // Format pesan pengingat WhatsApp saat libur dan terjadwal cito
+    const lines = [
+      '📍 Unit Dialisis',
+      '🏥 RS Happy Land Medical Centre',
+      '━━━━━━━━━━━━━━━━━━━━━━',
+      `👤 Nama: ${employee.name.toUpperCase()}`,
+      `📅 Tanggal: ${formattedDate}`,
+      '',
+      'Selamat beristirahat dan mengisi kembali energi.  Tapi anda *TERJADWAL CITO* ya kak. Terima kasih atas dedikasi Anda! 🙏✨',
+      '━━━━━━━━━━━━━━━━━━━━━━',
+      'Dialisync - RS Happy land Medical Centre Yogyakarta',
+    ];
+    return lines.join('\n');
+  }
+
+  // Format pesan pengingat WhatsApp saat libur biasa
   let taskText = '-';
   if (specialTaskName && specialTaskName.trim()) {
     taskText = `*${specialTaskName.trim().toUpperCase()}*`;
   }
 
   const lines = [
+    '📍 Unit Dialisis',
     '🏥 RS Happy Land Medical Centre',
-    '📍 Ruang Dialisis Gedung Timur Lt.3',
     '━━━━━━━━━━━━━━━━━━━━━━',
-    '📋 JADWAL DINAS & ALOKASI MESIN HD',
-    '',
     `👤 Nama: ${employee.name.toUpperCase()}`,
     `📅 Tanggal: ${formattedDate}`,
     `⏰ Sif: ${sifText}`,
@@ -993,6 +1015,11 @@ export function generatePersonalEmployeeWhatsApp(params: PersonalEmployeeWhatsAp
     .map((t) => SPECIAL_TASK_DEFINITIONS[t.category]?.name || t.category)
     .filter((t): t is string => Boolean(t));
 
+  const hasCito = empSpecialTasks.some(
+    (t) => t.category === 'cito' || (t.title && t.title.toLowerCase().includes('cito'))
+  ) || Boolean(specialTaskOverride && specialTaskOverride.toLowerCase().includes('cito')) ||
+  Boolean(employee.specialDuty && employee.specialDuty.toLowerCase().includes('cito'));
+
   if (isOffDay) {
     // FORMAT 3: Karyawan Saat Libur
     let chosenTask = specialTaskOverride;
@@ -1004,6 +1031,7 @@ export function generatePersonalEmployeeWhatsApp(params: PersonalEmployeeWhatsAp
       dateStr,
       shiftType: effectiveShift,
       specialTaskName: chosenTask,
+      hasCito,
     });
 
     return {

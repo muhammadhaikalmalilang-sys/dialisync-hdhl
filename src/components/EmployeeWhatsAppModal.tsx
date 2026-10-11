@@ -598,20 +598,58 @@ export const EmployeeWhatsAppModal: React.FC<EmployeeWhatsAppModalProps> = ({
                   </div>
                 </div>
               ) : autoData?.type === 'libur' ? (
-                <div className="pt-1 flex items-center space-x-2">
-                  <label className="text-[11px] font-semibold text-slate-600 shrink-0">
-                    🏷️ Tugas Khusus Saat Libur (Opsional):
-                  </label>
-                  <input
-                    type="text"
-                    value={offSpecialTask}
-                    onChange={(e) => {
-                      setOffSpecialTask(e.target.value);
-                      setIsEditingManually(false);
-                    }}
-                    placeholder="Contoh: PERAWAT CITO"
-                    className="flex-1 px-2.5 py-1 rounded-lg border border-slate-300 bg-white font-bold text-xs text-slate-800"
-                  />
+                <div className="pt-1 space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center space-x-1.5">
+                      <span className="text-[11px] font-bold text-slate-700">Status Libur:</span>
+                      <div className="flex items-center space-x-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setOffSpecialTask('');
+                            setIsEditingManually(false);
+                          }}
+                          className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition cursor-pointer ${
+                            !offSpecialTask && !autoData?.specialTasksList.some((t) => t.toLowerCase().includes('cito'))
+                              ? 'bg-amber-600 text-white shadow-2xs'
+                              : 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-100'
+                          }`}
+                        >
+                          🌴 Libur Biasa
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setOffSpecialTask('CITO');
+                            setIsEditingManually(false);
+                          }}
+                          className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition cursor-pointer ${
+                            offSpecialTask.toLowerCase().includes('cito') ||
+                            autoData?.specialTasksList.some((t) => t.toLowerCase().includes('cito'))
+                              ? 'bg-rose-600 text-white shadow-2xs'
+                              : 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-100'
+                          }`}
+                        >
+                          ⚡ Terjadwal CITO
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <label className="text-[11px] font-semibold text-slate-600 shrink-0">
+                      🏷️ Catatan Tugas:
+                    </label>
+                    <input
+                      type="text"
+                      value={offSpecialTask}
+                      onChange={(e) => {
+                        setOffSpecialTask(e.target.value);
+                        setIsEditingManually(false);
+                      }}
+                      placeholder="Contoh: CITO On-Call"
+                      className="flex-1 px-2.5 py-1 rounded-lg border border-slate-300 bg-white font-bold text-xs text-slate-800"
+                    />
+                  </div>
                 </div>
               ) : null}
             </div>

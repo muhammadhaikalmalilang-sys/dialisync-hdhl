@@ -40,7 +40,8 @@ import {
   RotateCcw,
   Sparkles,
   FileSpreadsheet,
-  RefreshCw
+  RefreshCw,
+  Palmtree
 } from 'lucide-react';
 import { GoogleSheetsService } from '../domain/GoogleSheetsService';
 import { storage, isInvalidNurseAccount } from '../utils/storage';
@@ -217,6 +218,10 @@ export const SpecialTasksView: React.FC<SpecialTasksViewProps> = ({
     priority: 'penting',
   });
 
+  // State untuk penugasan cepat CITO Hari Minggu (Standby On-Call, Tanpa Jadwal Shif)
+  const [sundayCitoNurseId, setSundayCitoNurseId] = useState<string>('');
+  const [sundayCitoNote, setSundayCitoNote] = useState<string>('');
+
   // Filter state for history tab
   const [historyMonthFilter, setHistoryMonthFilter] = useState<string>('all');
   const [historyCategoryFilter, setHistoryCategoryFilter] = useState<string>('all');
@@ -290,21 +295,25 @@ export const SpecialTasksView: React.FC<SpecialTasksViewProps> = ({
     return getEffectiveShiftForEmployee(emp, dateString, schedules, employees);
   };
 
-  // Determine clinical nurses scheduled for Shift Pagi on selectedDate:
-  const pagiNurses = sortNursesByShiftScheduleOrder(
-    clinicalNurses.filter((nurse) => {
-      const s = String(getEffectiveShift(nurse, selectedDate) || '').toLowerCase();
-      return s === 'pagi' || s.startsWith('pagi');
-    })
-  );
+  // Determine clinical nurses scheduled for Shift Pagi on selectedDate (Hari Minggu tidak ada jadwal shif):
+  const pagiNurses = isSunday
+    ? []
+    : sortNursesByShiftScheduleOrder(
+        clinicalNurses.filter((nurse) => {
+          const s = String(getEffectiveShift(nurse, selectedDate) || '').toLowerCase();
+          return s === 'pagi' || s.startsWith('pagi');
+        })
+      );
 
-  // Determine clinical nurses scheduled for Shift Siang on selectedDate:
-  const siangNurses = sortNursesByShiftScheduleOrder(
-    clinicalNurses.filter((nurse) => {
-      const s = String(getEffectiveShift(nurse, selectedDate) || '').toLowerCase();
-      return s === 'siang' || s.startsWith('siang');
-    })
-  );
+  // Determine clinical nurses scheduled for Shift Siang on selectedDate (Hari Minggu tidak ada jadwal shif):
+  const siangNurses = isSunday
+    ? []
+    : sortNursesByShiftScheduleOrder(
+        clinicalNurses.filter((nurse) => {
+          const s = String(getEffectiveShift(nurse, selectedDate) || '').toLowerCase();
+          return s === 'siang' || s.startsWith('siang');
+        })
+      );
 
   // Determine clinical nurses who are Libur / Cuti / Izin on selectedDate:
   const offNurses = employees.filter((nurse) => {
@@ -448,6 +457,58 @@ export const SpecialTasksView: React.FC<SpecialTasksViewProps> = ({
         );
       }
     }
+  };
+
+  // Dedicated single-click Sunday CITO assignment (Standby On-Call, Tanpa Penjadwalan Shif)
+  const handleAssignSundayCito = (e?: React.FormEvent, directNurseId?: string) => {
+    if (e) e.preventDefault();
+    if (!canManage) return;
+
+    const targetNurseId = directNurseId || sundayCitoNurseId || clinicalNurses[0]?.id;
+
+    if (!targetNurseId) {
+      setToastMessage('Pilih perawat yang akan ditugaskan CITO.');
+      return;
+    }
+
+    const nurse = employees.find((n) => n.id === targetNurseId);
+    const def = SPECIAL_TASK_DEFINITIONS.cito;
+
+    // Check if CITO task already exists on this date for this nurse
+    const existing = specialTasks.find(
+      (t) =>
+        t.assignedToId === targetNurseId &&
+        t.date === selectedDate &&
+        t.category === 'cito'
+    );
+
+    if (existing) {
+      setToastMessage(`${nurse?.name || 'Perawat'} sudah ditugaskan CITO pada hari Minggu ini.`);
+      return;
+    }
+
+    const newTask: SpecialTask = {
+      id: `task_${selectedDate}_cito_${targetNurseId}_${Date.now()}`,
+      title: `Tugas Khusus: ${def.name} (On-Call)`,
+      description: sundayCitoNote.trim() || 'Tugas Khusus CITO Hari Minggu (Standby On-Call, siap kapanpun dibutuhkan)',
+      assignedToId: targetNurseId,
+      assignedByName: `${currentUser.name} (${currentUser.role === 'admin' ? 'Admin' : (currentUser.role === 'pj_shift' || (currentUser.role as string) === 'katim') ? 'KATIM' : 'Karu'})`,
+      date: selectedDate,
+      shift: 'pagi', // Technical fallback for schema compatibility
+      priority: 'mendesak',
+      status: 'pending',
+      category: 'cito',
+      createdAt: new Date().toISOString().replace('T', ' ').substring(0, 16),
+    };
+
+    const nextTasks = [newTask, ...specialTasks];
+    onUpdateTasks(nextTasks);
+    storage.saveSpecialTasks(nextTasks);
+    cloudSync.saveSpecialTasks(nextTasks).catch((err) => console.warn('[CloudSync] saveSpecialTasks notice:', err));
+    triggerBackgroundSync(nextTasks);
+    setToastMessage(`Tugas CITO Hari Minggu (On-Call) berhasil ditugaskan ke ${nurse?.name || 'perawat'}.`);
+    setSundayCitoNurseId('');
+    setSundayCitoNote('');
   };
 
   // Dedicated single-click PJ Shift assignment for a shift
@@ -815,18 +876,41 @@ export const SpecialTasksView: React.FC<SpecialTasksViewProps> = ({
             <span>{isSyncingSheets ? 'Mengirim ke Sheets...' : `Kirim ke Google Sheet (${specialTasks.length} Tugas)`}</span>
           </button>
 
+          {canManage && isSunday && (
+            <button
+              onClick={() => {
+                const initialNurse = clinicalNurses[0]?.id || '';
+                setTaskForm({
+                  title: 'Tugas Khusus: CITO (Standby On-Call)',
+                  description: 'Tindakan HD CITO / Emergency HD Hari Minggu (Standby On-Call, siap kapanpun dibutuhkan - tanpa jadwal shif)',
+                  assignedToId: initialNurse,
+                  date: selectedDate,
+                  shift: 'pagi',
+                  priority: 'mendesak',
+                  categories: ['cito'],
+                });
+                setShowCreateModal(true);
+              }}
+              className="w-full sm:w-auto px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs shadow-xs transition flex items-center justify-center space-x-1.5 cursor-pointer active:scale-95 min-h-[36px] border border-slate-950"
+              title="Tugaskan perawat untuk tindakan HD CITO pada hari Minggu (Standby On-Call, tanpa jadwal shif)"
+            >
+              <Zap className="w-4 h-4 text-amber-400 shrink-0" />
+              <span>+ Tugas CITO Hari Minggu</span>
+            </button>
+          )}
+
           {canManage && (
             <button
               onClick={() => {
-                const initialNurse = pagiNurses[0]?.id || siangNurses[0]?.id || '';
+                const initialNurse = pagiNurses[0]?.id || siangNurses[0]?.id || clinicalNurses[0]?.id || '';
                 setTaskForm({
-                  title: '',
-                  description: '',
+                  title: isSunday ? 'Tugas Khusus: CITO' : '',
+                  description: isSunday ? 'Tindakan HD CITO / Emergency HD Hari Minggu (Alokasi Mesin Isolasi)' : '',
                   assignedToId: initialNurse,
                   date: selectedDate,
                   shift: pagiNurses.length > 0 ? 'pagi' : 'siang',
-                  priority: 'normal',
-                  categories: ['pj_shift'],
+                  priority: isSunday ? 'mendesak' : 'normal',
+                  categories: isSunday ? ['cito'] : ['pj_shift'],
                 });
                 setShowCreateModal(true);
               }}
@@ -1013,16 +1097,162 @@ export const SpecialTasksView: React.FC<SpecialTasksViewProps> = ({
       {/* VIEW 1: SHIFTS VIEW (SHIF PAGI & SHIF SIANG SEPARATE) */}
       {activeView === 'shifts' && (
         <div className="space-y-6">
-          {/* Sunday Notice if applicable */}
+          {/* Sunday CITO Operations Panel */}
           {isSunday && (
-            <div className="bg-rose-50 border border-rose-200 rounded-2xl p-4 flex items-start space-x-3 text-xs text-rose-900">
-              <AlertTriangle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
-              <div>
-                <span className="font-bold">Perhatian: Hari Minggu adalah Hari Libur Rutin HD.</span>
-                <p className="mt-0.5 text-rose-800">
-                  Secara standar tidak ada jadwal shift reguler pada hari Minggu. Namun jika ada tindakan <strong>CITO darurat</strong> atau dinas khusus, Anda tetap dapat menambahkan perawat dan memberikan tugas khusus di bawah.
-                </p>
+            <div className="bg-gradient-to-br from-slate-900 via-slate-800 to-rose-950 text-white border border-slate-700/80 rounded-2xl p-4 sm:p-5 shadow-md space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 border-b border-white/10 pb-3">
+                <div className="flex items-start space-x-3">
+                  <div className="w-10 h-10 rounded-xl bg-amber-400/20 border border-amber-400/30 flex items-center justify-center text-amber-300 shrink-0 mt-0.5">
+                    <Zap className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center space-x-2 flex-wrap">
+                      <h3 className="font-extrabold text-sm sm:text-base text-white tracking-tight">
+                        Penugasan Tindakan CITO Hari Minggu
+                      </h3>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-rose-500/30 text-rose-200 border border-rose-400/30">
+                        HD Emergency / On-Call
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-300 mt-1 leading-relaxed">
+                      Hari Minggu merupakan jadwal libur rutin. Apabila terdapat tindakan <strong>CITO darurat</strong>, Anda dapat langsung menugaskan perawat on-call di bawah. Perawat yang ditugaskan CITO otomatis dihubungkan ke mesin isolasi dan muncul di shif terkait.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 self-start sm:self-auto shrink-0">
+                  <span className="px-3 py-1 rounded-xl bg-white/10 text-amber-300 text-xs font-bold border border-white/15 flex items-center gap-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Unit Rutin Libur</span>
+                  </span>
+                </div>
               </div>
+
+              {/* Form Input CITO Hari Minggu (Tanpa Penjadwalan Shif) */}
+              {canManage && (
+                <form
+                  onSubmit={handleAssignSundayCito}
+                  className="bg-white/10 backdrop-blur-xs border border-white/15 rounded-xl p-3.5 sm:p-4 grid grid-cols-1 sm:grid-cols-12 gap-3 items-end"
+                >
+                  <div className="sm:col-span-8">
+                    <label className="block text-[11px] font-bold text-slate-200 mb-1">
+                      Pilih Perawat On-Call / CITO Hari Minggu:
+                    </label>
+                    <select
+                      value={sundayCitoNurseId}
+                      onChange={(e) => setSundayCitoNurseId(e.target.value)}
+                      className="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-xl text-xs font-bold text-white focus:ring-2 focus:ring-amber-400 focus:outline-hidden cursor-pointer"
+                      required
+                    >
+                      <option value="">-- Pilih Perawat ({clinicalNurses.length} Staf) --</option>
+                      {clinicalNurses.map((nurse) => (
+                        <option key={nurse.id} value={nurse.id}>
+                          {nurse.name} {nurse.role === 'kepala_ruangan' ? '(Karu)' : (nurse.role === 'pj_shift' || (nurse.role as string) === 'katim') ? '(KATIM HD)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-[10px] text-amber-200/80 mt-1">
+                      * Tanpa jadwal shif — perawat berstatus libur rutin dan bersiaga on-call kapanpun dibutuhkan.
+                    </p>
+                  </div>
+
+                  <div className="sm:col-span-4 flex items-center gap-2">
+                    <button
+                      type="submit"
+                      className="w-full px-4 py-2.5 bg-amber-400 hover:bg-amber-300 active:scale-95 text-slate-950 font-extrabold text-xs rounded-xl shadow-md transition flex items-center justify-center space-x-1.5 cursor-pointer"
+                    >
+                      <Zap className="w-4 h-4 fill-slate-950" />
+                      <span>Tugaskan CITO Hari Minggu</span>
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              {/* Daftar Tugas CITO Hari Minggu yang Aktif */}
+              {(() => {
+                const sundayCitoTasks = specialTasks.filter(
+                  (t) => t.date === selectedDate && t.category === 'cito'
+                );
+
+                if (sundayCitoTasks.length === 0) {
+                  return (
+                    <div className="text-center py-3 text-slate-400 text-xs italic bg-black/20 rounded-xl border border-white/5">
+                      Belum ada penugasan CITO pada hari Minggu ini. Pilih perawat di atas untuk menambahkan tugas CITO darurat.
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between text-xs text-slate-300 font-bold">
+                      <span>Perawat Bertugas CITO Hari Ini ({sundayCitoTasks.length}):</span>
+                      <span className="text-[11px] text-amber-300 font-medium">Standby On-Call • Otomatis Alokasi Mesin Isolasi HD</span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      {sundayCitoTasks.map((task) => {
+                        const nurse = employees.find((e) => e.id === task.assignedToId);
+
+                        return (
+                          <div
+                            key={task.id}
+                            className="bg-white/10 border border-white/15 rounded-xl p-3 flex items-center justify-between gap-2.5"
+                          >
+                            <div className="flex items-center space-x-2.5 min-w-0">
+                              <div className="w-8 h-8 rounded-full bg-amber-400 text-slate-950 font-black text-xs flex items-center justify-center shrink-0 shadow-xs">
+                                {nurse?.name
+                                  ?.split(' ')
+                                  .filter((w) => !w.includes('.'))
+                                  .map((n) => n[0])
+                                  .slice(0, 2)
+                                  .join('') || 'HD'}
+                              </div>
+                              <div className="min-w-0">
+                                <div className="font-extrabold text-white text-xs truncate flex items-center gap-1.5">
+                                  <span>{nurse?.name || 'Perawat HD'}</span>
+                                  <span className="px-1.5 py-0.2 rounded text-[9px] font-black bg-rose-500 text-white">
+                                    CITO
+                                  </span>
+                                </div>
+                                <div className="text-[11px] text-amber-200/90 truncate flex items-center gap-1.5">
+                                  <span className="font-semibold text-amber-300">Standby On-Call</span>
+                                  <span>•</span>
+                                  <span className="text-slate-300 font-normal">Tanpa Jadwal Shif</span>
+                                  <span>•</span>
+                                  <span className="text-amber-200/80 font-medium">Mesin Isolasi</span>
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center space-x-1.5 shrink-0">
+                              {task.status !== 'completed' && (
+                                <button
+                                  type="button"
+                                  onClick={() => setCompleteModal(task)}
+                                  className="p-1.5 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 rounded-lg text-xs font-bold transition cursor-pointer"
+                                  title="Verifikasi Selesai"
+                                >
+                                  <Check className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                              {canManage && (
+                                <button
+                                  type="button"
+                                  onClick={() => setDeleteModalTask(task)}
+                                  className="p-1.5 bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 rounded-lg text-xs font-bold transition cursor-pointer"
+                                  title="Hapus Penugasan CITO"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           )}
 
@@ -1155,16 +1385,29 @@ export const SpecialTasksView: React.FC<SpecialTasksViewProps> = ({
                       Tidak Ada Perawat di Shif Pagi
                     </h3>
                     <p className="text-[11px] text-slate-500 max-w-xs mx-auto mt-1 mb-3">
-                      Tidak ada perawat yang aktif bertugas di Shif Pagi pada tanggal ini. Ganti dinas hanya bisa dilakukan pada matrik jadwal bulanan.
+                      {isSunday
+                        ? 'Hari Minggu adalah jadwal libur rutin. Anda dapat menugaskan perawat on-call untuk dinas CITO darurat.'
+                        : 'Tidak ada perawat yang aktif bertugas di Shif Pagi pada tanggal ini. Ganti dinas hanya bisa dilakukan pada matrik jadwal bulanan.'}
                     </p>
-                    {onNavigate && (
-                      <button
-                        onClick={() => onNavigate('jadwal')}
-                        className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-xs transition inline-flex items-center space-x-1.5 cursor-pointer active:scale-95"
-                      >
-                        <Calendar className="w-3.5 h-3.5" />
-                        <span>Buka Matrik Jadwal Bulanan</span>
-                      </button>
+                    {isSunday ? (
+                      <div className="flex flex-col items-center gap-2 mt-2">
+                        <span className="text-[11px] text-amber-800 font-bold bg-amber-50 px-3 py-1.5 rounded-lg border border-amber-200 text-center">
+                          Hari Minggu: Seluruh perawat libur rutin (Tanpa Jadwal Shif)
+                        </span>
+                        <p className="text-[11px] text-slate-500 max-w-xs text-center">
+                          Tugas CITO hari Minggu bersifat Standby On-Call dan dikelola langsung melalui panel CITO di bagian atas.
+                        </p>
+                      </div>
+                    ) : (
+                      onNavigate && (
+                        <button
+                          onClick={() => onNavigate('jadwal')}
+                          className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-xs transition inline-flex items-center space-x-1.5 cursor-pointer active:scale-95"
+                        >
+                          <Calendar className="w-3.5 h-3.5" />
+                          <span>Buka Matrik Jadwal Bulanan</span>
+                        </button>
+                      )
                     )}
                   </div>
                 ) : (
@@ -1391,16 +1634,29 @@ export const SpecialTasksView: React.FC<SpecialTasksViewProps> = ({
                       Tidak Ada Perawat di Shif Siang
                     </h3>
                     <p className="text-[11px] text-slate-500 max-w-xs mx-auto mt-1 mb-3">
-                      Tidak ada perawat yang aktif bertugas di Shif Siang pada tanggal ini. Ganti dinas hanya bisa dilakukan pada matrik jadwal bulanan.
+                      {isSunday
+                        ? 'Hari Minggu adalah jadwal libur rutin. Anda dapat menugaskan perawat on-call untuk dinas CITO darurat.'
+                        : 'Tidak ada perawat yang aktif bertugas di Shif Siang pada tanggal ini. Ganti dinas hanya bisa dilakukan pada matrik jadwal bulanan.'}
                     </p>
-                    {onNavigate && (
-                      <button
-                        onClick={() => onNavigate('jadwal')}
-                        className="px-3.5 py-2 bg-pink-600 hover:bg-pink-700 text-white rounded-xl text-xs font-bold shadow-xs transition inline-flex items-center space-x-1.5 cursor-pointer active:scale-95"
-                      >
-                        <Calendar className="w-3.5 h-3.5" />
-                        <span>Buka Matrik Jadwal Bulanan</span>
-                      </button>
+                    {isSunday ? (
+                      <div className="flex flex-col items-center gap-2 mt-2">
+                        <span className="text-[11px] text-amber-800 font-bold bg-amber-50 px-3 py-1.5 rounded-lg border border-amber-200 text-center">
+                          Hari Minggu: Seluruh perawat libur rutin (Tanpa Jadwal Shif)
+                        </span>
+                        <p className="text-[11px] text-slate-500 max-w-xs text-center">
+                          Tugas CITO hari Minggu bersifat Standby On-Call dan dikelola langsung melalui panel CITO di bagian atas.
+                        </p>
+                      </div>
+                    ) : (
+                      onNavigate && (
+                        <button
+                          onClick={() => onNavigate('jadwal')}
+                          className="px-3.5 py-2 bg-pink-600 hover:bg-pink-700 text-white rounded-xl text-xs font-bold shadow-xs transition inline-flex items-center space-x-1.5 cursor-pointer active:scale-95"
+                        >
+                          <Calendar className="w-3.5 h-3.5" />
+                          <span>Buka Matrik Jadwal Bulanan</span>
+                        </button>
+                      )
                     )}
                   </div>
                 ) : (
@@ -1786,14 +2042,21 @@ export const SpecialTasksView: React.FC<SpecialTasksViewProps> = ({
                 </div>
                 <div>
                   <label className="block font-bold text-slate-700 mb-1">Shift:</label>
-                  <select
-                    value={taskForm.shift}
-                    onChange={(e) => setTaskForm({ ...taskForm, shift: e.target.value as any })}
-                    className="w-full p-2 border border-slate-300 rounded-xl focus:ring-2 focus:ring-teal-500 font-semibold"
-                  >
-                    <option value="pagi">Shift Pagi (07:00 - 14:00)</option>
-                    <option value="siang">Shift Siang (13:30 - 20:30)</option>
-                  </select>
+                  {new Date(taskForm.date + 'T00:00:00').getDay() === 0 ? (
+                    <div className="w-full p-2 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 font-bold text-xs flex items-center gap-1.5">
+                      <Zap className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                      <span>Standby On-Call (Tanpa Jadwal Shif)</span>
+                    </div>
+                  ) : (
+                    <select
+                      value={taskForm.shift}
+                      onChange={(e) => setTaskForm({ ...taskForm, shift: e.target.value as any })}
+                      className="w-full p-2 border border-slate-300 rounded-xl focus:ring-2 focus:ring-teal-500 font-semibold"
+                    >
+                      <option value="pagi">Shift Pagi (07:00 - 14:00)</option>
+                      <option value="siang">Shift Siang (13:30 - 20:30)</option>
+                    </select>
+                  )}
                 </div>
               </div>
 
@@ -1822,25 +2085,35 @@ export const SpecialTasksView: React.FC<SpecialTasksViewProps> = ({
                       required
                     >
                       <option value="">-- Pilih Perawat ({activeNurses.length} Staf) --</option>
-                      {onShiftNurses.length > 0 && (
-                        <optgroup label={`Bertugas di Shift ${taskForm.shift.toUpperCase()} (${onShiftNurses.length} Staf)`}>
-                          {onShiftNurses.map((emp) => (
+                      {onShiftNurses.length > 0 ? (
+                        <>
+                          <optgroup label={`Bertugas di Shift ${taskForm.shift.toUpperCase()} (${onShiftNurses.length} Staf)`}>
+                            {onShiftNurses.map((emp) => (
+                              <option key={emp.id} value={emp.id}>
+                                {emp.name} {emp.role === 'kepala_ruangan' ? '(Karu)' : emp.role === 'pj_shift' ? '(KATIM)' : ''}
+                              </option>
+                            ))}
+                          </optgroup>
+                          {otherNurses.length > 0 && (
+                            <optgroup label={`Perawat Lainnya / Staf Cadangan (${otherNurses.length} Staf)`}>
+                              {otherNurses.map((emp) => {
+                                const curShift = getEffectiveShift(emp, taskForm.date);
+                                return (
+                                  <option key={emp.id} value={emp.id}>
+                                    {emp.name} ({curShift.toUpperCase()})
+                                  </option>
+                                );
+                              })}
+                            </optgroup>
+                          )}
+                        </>
+                      ) : (
+                        <optgroup label={`Perawat On-Call / Standby Hari Minggu (${activeNurses.length} Staf)`}>
+                          {activeNurses.map((emp) => (
                             <option key={emp.id} value={emp.id}>
                               {emp.name} {emp.role === 'kepala_ruangan' ? '(Karu)' : emp.role === 'pj_shift' ? '(KATIM)' : ''}
                             </option>
                           ))}
-                        </optgroup>
-                      )}
-                      {otherNurses.length > 0 && (
-                        <optgroup label={`Perawat Lainnya / Staf Cadangan (${otherNurses.length} Staf)`}>
-                          {otherNurses.map((emp) => {
-                            const curShift = getEffectiveShift(emp, taskForm.date);
-                            return (
-                              <option key={emp.id} value={emp.id}>
-                                {emp.name} ({curShift.toUpperCase()})
-                              </option>
-                            );
-                          })}
                         </optgroup>
                       )}
                     </select>

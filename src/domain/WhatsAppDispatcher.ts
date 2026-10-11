@@ -139,16 +139,43 @@ export class WhatsAppDispatcher {
       sb.push('* Priming & pemeriksaan dialyzer sesuai standar keselamatan');
       sb.push('* Monitoring TTV & parameter mesin tiap 30-60 menit');
       sb.push('* Operan pasien & desinfeksi mesin bersama sif berikutnya');
-    } else {
       sb.push('');
-      sb.push('Selamat beristirahat dan mengisi kembali energi. Terima kasih atas dedikasi Anda! 🙏✨');
+      sb.push('━━━━━━━━━━━━━━━━━━━━━━');
+      sb.push('Dialisync - RS Happy land Medical Centre Yogyakarta');
+      return sb.join('\n');
     }
 
-    sb.push('');
-    sb.push('━━━━━━━━━━━━━━━━━━━━━━');
-    sb.push('Sistem Otomasi Jadwal & Alokasi HD HemoShift');
+    // Libur / Off Shift
+    const isCitoDuty = Boolean(assignment.specialDuty && assignment.specialDuty.toUpperCase().includes('CITO'));
+    if (isCitoDuty) {
+      return [
+        '📍 Unit Dialisis',
+        '🏥 RS Happy Land Medical Centre',
+        '━━━━━━━━━━━━━━━━━━━━━━',
+        `👤 Nama: ${assignment.nurseName.toUpperCase()}`,
+        `📅 Tanggal: ${formattedDate}`,
+        '',
+        'Selamat beristirahat dan mengisi kembali energi.  Tapi anda *TERJADWAL CITO* ya kak. Terima kasih atas dedikasi Anda! 🙏✨',
+        '━━━━━━━━━━━━━━━━━━━━━━',
+        'Dialisync - RS Happy land Medical Centre Yogyakarta',
+      ].join('\n');
+    }
 
-    return sb.join('\n');
+    return [
+      '📍 Unit Dialisis',
+      '🏥 RS Happy Land Medical Centre',
+      '━━━━━━━━━━━━━━━━━━━━━━',
+      `👤 Nama: ${assignment.nurseName.toUpperCase()}`,
+      `📅 Tanggal: ${formattedDate}`,
+      `⏰ Sif: ${shiftBadge}`,
+      `🏷️ Tugas Khusus : ${dutyText}`,
+      ' ',
+      '',
+      'Selamat beristirahat dan mengisi kembali energi. Terima kasih atas dedikasi Anda! 🙏✨',
+      '',
+      '━━━━━━━━━━━━━━━━━━━━━━',
+      'Dialisync - RS Happy land Medical Centre Yogyakarta',
+    ].join('\n');
   }
 
   /**

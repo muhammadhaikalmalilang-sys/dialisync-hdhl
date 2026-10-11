@@ -503,32 +503,17 @@ export const RoomFloorPlan: React.FC<RoomFloorPlanProps> = ({
             </div>
           </div>
 
-          {/* Buttons: Auto Balance & Seed 41 Machines */}
-          <div className="flex flex-wrap items-center gap-2">
             {canManage && (
-              <>
-                <button
-                  type="button"
-                  onClick={onAutoAssign}
-                  className="w-full sm:w-auto px-3 py-1.5 bg-gradient-to-r from-teal-600 to-cyan-600 hover:from-teal-700 hover:to-cyan-700 text-white rounded-xl text-xs font-bold shadow-2xs flex items-center justify-center space-x-1.5 transition active:scale-95 cursor-pointer min-h-[34px]"
-                  title="Klik 1 kali untuk melakukan ploting acak berurutan sesuai denah secara adil & merata. Klik ulang untuk mengacak kembali secara adil."
-                >
-                  <Shuffle className="w-3.5 h-3.5 animate-pulse shrink-0" />
-                  <span>Plotting Berurutan (Acak Adil)</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={onApplySketchLayout}
-                  className="w-full sm:w-auto px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 rounded-xl text-xs font-bold transition flex items-center justify-center space-x-1.5 min-h-[34px] cursor-pointer"
-                  title="Sinkronkan / Buat 40 Mesin sesuai denah rumah sakit (A01-A12, B01-B09, C01-C08, D01-D03, E01-E02, F01-F02, ISO 01-ISO 04)"
-                >
-                  <RefreshCw className="w-3.5 h-3.5 text-teal-600 shrink-0" />
-                  <span>Sinkronkan 40 Mesin</span>
-                </button>
-              </>
+              <button
+                type="button"
+                onClick={onAutoAssign}
+                className="w-full sm:w-auto px-3 py-1.5 bg-gradient-to-r from-teal-600 to-cyan-600 hover:from-teal-700 hover:to-cyan-700 text-white rounded-xl text-xs font-bold shadow-2xs flex items-center justify-center space-x-1.5 transition active:scale-95 cursor-pointer min-h-[34px]"
+                title="Klik 1 kali untuk melakukan ploting acak berurutan sesuai denah secara adil & merata. Klik ulang untuk mengacak kembali secara adil."
+              >
+                <Shuffle className="w-3.5 h-3.5 animate-pulse shrink-0" />
+                <span>Plotting Berurutan (Acak Adil)</span>
+              </button>
             )}
-          </div>
         </div>
       </div>
 

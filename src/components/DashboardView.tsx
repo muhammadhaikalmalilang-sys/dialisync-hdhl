@@ -18,9 +18,8 @@ import {
   sortNursesByMachineAllocationOrder,
   getTodayDateString
 } from '../utils/scheduler';
-import { WhatsAppShareModal } from './WhatsAppShareModal';
-import { EmployeeWhatsAppModal } from './EmployeeWhatsAppModal';
 import { isInvalidNurseAccount } from '../utils/storage';
+import { EmployeeWhatsAppModal } from './EmployeeWhatsAppModal';
 import { 
   Calendar, 
   Layers,
@@ -31,7 +30,6 @@ import {
   Activity,
   AlertTriangle,
   ArrowRight,
-  MessageCircle,
   Stethoscope,
   Phone,
   Clock,
@@ -73,11 +71,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 }) => {
   // Operational Date Selector (defaults to today's active date)
   const [selectedDate, setSelectedDate] = useState<string>(() => activeDate || getTodayDateString());
-  const [isWhatsAppModalOpen, setIsWhatsAppModalOpen] = useState(false);
-  const [selectedEmployeeForWA, setSelectedEmployeeForWA] = useState<{
-    employee: UserAccount;
-    shift?: ShiftType;
-  } | null>(null);
+  const [selectedEmployeeForWA, setSelectedEmployeeForWA] = useState<UserAccount | null>(null);
+  const [selectedShiftForWA, setSelectedShiftForWA] = useState<ShiftType | undefined>(undefined);
 
   React.useEffect(() => {
     if (activeDate && activeDate !== selectedDate) {
@@ -706,23 +701,21 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                             </span>
                           )}
                           {doctorPagi.phone && (
-                            <a
-                              href={`https://wa.me/${doctorPagi.phone.replace(/[^0-9]/g, '').replace(/^0/, '62')}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="inline-flex items-center space-x-1 text-[11px] text-emerald-700 hover:text-emerald-800 font-bold hover:underline"
-                            >
+                            <span className="inline-flex items-center space-x-1 text-[11px] text-emerald-800 font-mono font-medium">
                               <Phone className="w-3 h-3 text-emerald-600" />
                               <span>{doctorPagi.phone}</span>
-                            </a>
+                            </span>
                           )}
                           <button
                             type="button"
-                            onClick={() => setSelectedEmployeeForWA({ employee: doctorPagi, shift: 'pagi' })}
-                            className="inline-flex items-center space-x-1.5 px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold rounded-lg text-[11px] transition shadow-2xs cursor-pointer active:scale-95"
-                            title={`Kirim WA jadwal tugas jaga HD ke ${doctorPagi.name}`}
+                            onClick={() => {
+                              setSelectedEmployeeForWA(doctorPagi);
+                              setSelectedShiftForWA('pagi');
+                            }}
+                            className="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[11px] shadow-xs transition cursor-pointer"
+                            title={`Kirim WA Jadwal Dokter ${doctorPagi.name}`}
                           >
-                            <MessageCircle className="w-3 h-3" />
+                            <Phone className="w-3.5 h-3.5" />
                             <span>Kirim WA Jadwal</span>
                           </button>
                         </div>
@@ -795,23 +788,21 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                             </span>
                           )}
                           {doctorSiang.phone && (
-                            <a
-                              href={`https://wa.me/${doctorSiang.phone.replace(/[^0-9]/g, '').replace(/^0/, '62')}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="inline-flex items-center space-x-1 text-[11px] text-sky-700 hover:text-sky-800 font-bold hover:underline"
-                            >
+                            <span className="inline-flex items-center space-x-1 text-[11px] text-sky-800 font-mono font-medium">
                               <Phone className="w-3 h-3 text-sky-600" />
                               <span>{doctorSiang.phone}</span>
-                            </a>
+                            </span>
                           )}
                           <button
                             type="button"
-                            onClick={() => setSelectedEmployeeForWA({ employee: doctorSiang, shift: 'siang' })}
-                            className="inline-flex items-center space-x-1.5 px-2.5 py-1 bg-sky-600 hover:bg-sky-500 text-white font-extrabold rounded-lg text-[11px] transition shadow-2xs cursor-pointer active:scale-95"
-                            title={`Kirim WA jadwal tugas jaga HD ke ${doctorSiang.name}`}
+                            onClick={() => {
+                              setSelectedEmployeeForWA(doctorSiang);
+                              setSelectedShiftForWA('siang');
+                            }}
+                            className="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-lg bg-sky-600 hover:bg-sky-700 text-white font-bold text-[11px] shadow-xs transition cursor-pointer"
+                            title={`Kirim WA Jadwal Dokter ${doctorSiang.name}`}
                           >
-                            <MessageCircle className="w-3 h-3" />
+                            <Phone className="w-3.5 h-3.5" />
                             <span>Kirim WA Jadwal</span>
                           </button>
                         </div>
@@ -1183,21 +1174,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       </div>
                     )}
 
-                    {/* Send WA Button */}
-                    <div className="pt-2 border-t border-slate-200/80 flex items-center justify-between">
-                      <span className="text-[10px] text-slate-500 font-mono">
-                        {staff.phone ? staff.phone : 'Tanpa nomor WA'}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => setSelectedEmployeeForWA({ employee: staff, shift: (eff as ShiftType) || 'libur' })}
-                        className="inline-flex items-center space-x-1 px-2.5 py-1 bg-amber-100 hover:bg-amber-200 text-amber-950 border border-amber-300 rounded-lg text-[11px] font-bold transition shadow-2xs hover:scale-105 active:scale-95 cursor-pointer"
-                        title={`Kirim pengingat libur / tugas khusus via WA ke ${staff.name}`}
-                      >
-                        <MessageCircle className="w-3 h-3 text-amber-700" />
-                        <span>Kirim WA Libur</span>
-                      </button>
-                    </div>
+                    {staff.phone && (
+                      <div className="pt-2 border-t border-slate-200/80 flex items-center justify-between">
+                        <span className="text-[10px] text-slate-500 font-mono">
+                          {staff.phone}
+                        </span>
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -1210,37 +1193,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       </div>
 
-      {/* WhatsApp Share Modal */}
-      {isWhatsAppModalOpen && (
-        <WhatsAppShareModal
-          isOpen={isWhatsAppModalOpen}
-          onClose={() => setIsWhatsAppModalOpen(false)}
-          selectedDate={selectedDate}
-          employees={employees}
-          schedules={schedules}
-          machines={machines}
-          machineAssignments={machineAssignments}
-          specialTasks={specialTasks}
-          onUpdateEmployees={onUpdateEmployees}
-          settings={settings}
-          onUpdateSettings={onUpdateSettings}
-        />
-      )}
-
-      {/* Individual Employee WhatsApp Modal */}
+      {/* Personal Doctor WhatsApp Modal */}
       {selectedEmployeeForWA && (
         <EmployeeWhatsAppModal
-          isOpen={Boolean(selectedEmployeeForWA)}
-          onClose={() => setSelectedEmployeeForWA(null)}
-          employee={selectedEmployeeForWA.employee}
+          isOpen={!!selectedEmployeeForWA}
+          onClose={() => {
+            setSelectedEmployeeForWA(null);
+            setSelectedShiftForWA(undefined);
+          }}
+          employee={selectedEmployeeForWA}
           selectedDate={selectedDate}
-          initialShift={selectedEmployeeForWA.shift}
+          initialShift={selectedShiftForWA}
           employees={employees}
           schedules={schedules}
           machines={machines}
           machineAssignments={machineAssignments}
           specialTasks={specialTasks}
-          onUpdateEmployees={onUpdateEmployees}
         />
       )}
     </div>

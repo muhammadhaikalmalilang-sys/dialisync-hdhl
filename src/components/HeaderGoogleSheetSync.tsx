@@ -2270,6 +2270,7 @@ export const HeaderGoogleSheetSync: React.FC<HeaderGoogleSheetSyncProps> = ({
           isOpen={showHeadNurseModal}
           onClose={() => setShowHeadNurseModal(false)}
           selectedDate={selectedWhatsAppDate}
+          onDateChange={setSelectedWhatsAppDate}
           employees={employees}
           schedules={schedules}
           machines={machines}
