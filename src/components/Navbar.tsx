@@ -3,18 +3,13 @@ import { UserAccount, UserRole, ShiftSchedule, HDMachine, MachineAssignment, App
 import { SyncStatus } from '../services/cloudSync';
 import { 
   Activity, 
-  User, 
   LogOut, 
   Shield, 
   UserCheck, 
   Stethoscope, 
-  Clock, 
   Calendar,
   Layers,
-  ChevronDown,
-  CloudCheck,
-  Cloud,
-  FileSpreadsheet
+  ChevronDown
 } from 'lucide-react';
 import { HeaderGoogleSheetSync } from './HeaderGoogleSheetSync';
 
@@ -62,12 +57,6 @@ export const Navbar: React.FC<NavbarProps> = ({
   operationalDate,
 }) => {
   const [showSwitchMenu, setShowSwitchMenu] = React.useState(false);
-  const [currentTime, setCurrentTime] = React.useState(new Date());
-
-  React.useEffect(() => {
-    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
-    return () => clearInterval(timer);
-  }, []);
 
   const getRoleBadge = (role: UserRole) => {
     switch (role) {
@@ -111,19 +100,6 @@ export const Navbar: React.FC<NavbarProps> = ({
   const badgeInfo = getRoleBadge(currentUser.role);
   const RoleIcon = badgeInfo.icon;
 
-  const timeString = currentTime.toLocaleTimeString('id-ID', {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  });
-
-  const dateString = currentTime.toLocaleDateString('id-ID', {
-    weekday: 'long',
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-  });
-
   return (
     <header className="bg-slate-900/98 text-white border-b border-slate-800 sticky top-0 z-40 shadow-lg backdrop-blur-md">
       {/* Main Navigation Bar */}
@@ -147,9 +123,6 @@ export const Navbar: React.FC<NavbarProps> = ({
                 <h1 id="app-header-title" className="text-base sm:text-lg md:text-xl font-black tracking-wider text-white leading-none">
                   DIALISYNC
                 </h1>
-                <span className="hidden xl:inline text-[10px] font-semibold text-teal-300 bg-teal-950/80 border border-teal-800/60 px-2 py-0.5 rounded-md">
-                  Unit Hemodialisa
-                </span>
               </div>
               <span className="text-[10px] sm:text-[11px] text-slate-400 font-medium tracking-wide mt-0.5">
                 RS Happy Land Medical Centre
@@ -168,7 +141,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               }`}
             >
               <Activity className="w-4 h-4" />
-              <span>Dashboard HD</span>
+              <span>Dashboard</span>
             </button>
 
             <button
@@ -222,17 +195,8 @@ export const Navbar: React.FC<NavbarProps> = ({
             )}
           </nav>
 
-          {/* User Profile, Clock & Actions */}
+          {/* User Profile & Actions */}
           <div className="flex items-center space-x-2 sm:space-x-2.5">
-            {/* Real-time Clock & Date Display */}
-            <div className="hidden xl:flex items-center space-x-2 text-xs text-slate-300 bg-slate-950/60 px-3 py-1.5 rounded-xl border border-slate-800/80 shrink-0">
-              <Calendar className="w-3.5 h-3.5 text-teal-400" />
-              <span>{dateString}</span>
-              <span className="text-slate-600">·</span>
-              <Clock className="w-3.5 h-3.5 text-teal-400" />
-              <span className="font-mono text-teal-300 font-bold">{timeString} WIB</span>
-            </div>
-
             {/* Quick Switch Dropdown for interactive demo testing */}
             <div className="relative">
               <button

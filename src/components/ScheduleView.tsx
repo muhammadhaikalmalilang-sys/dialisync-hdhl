@@ -2342,20 +2342,20 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                   return (
                     <tr
                       key={emp.id}
-                      className={`hover:bg-teal-50/30 transition-colors group ${
+                      className={`hover:bg-teal-50/30 transition-colors group h-[58px] ${
                         isCurrent ? 'bg-teal-50/40' : idx % 2 === 1 ? 'bg-slate-50/30' : 'bg-white'
                       }`}
                     >
                       {/* Fixed Staff Column */}
-                      <td className="p-2.5 border-r border-slate-200 bg-white sticky left-0 z-10 font-medium group-hover:bg-teal-50/20 transition-colors shadow-[2px_0_4px_-2px_rgba(0,0,0,0.06)]">
-                        <div className="flex items-center space-x-2.5">
+                      <td className="p-2.5 border-r border-slate-200 bg-white sticky left-0 z-10 font-medium group-hover:bg-teal-50/20 transition-colors shadow-[2px_0_4px_-2px_rgba(0,0,0,0.06)] h-[58px]">
+                        <div className="flex items-center space-x-2.5 h-full">
                           <div
                             className="w-6 h-6 rounded-md font-extrabold flex items-center justify-center text-[10px] text-white shrink-0 shadow-2xs bg-teal-600"
                             title={`No. Urut ${idx + 1}`}
                           >
                             {idx + 1}
                           </div>
-                          <div className="truncate max-w-[170px]">
+                          <div className="truncate max-w-[170px] min-h-[38px] flex flex-col justify-center">
                             <div className="font-bold text-slate-800 text-xs truncate flex items-center gap-1">
                               <span>{emp.name}</span>
                               {isCurrent && (
@@ -2383,10 +2383,12 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                                 <span className="text-[9px] font-bold text-blue-600">(Manual)</span>
                               )}
                             </div>
-                            {emp.specialDuty && (
+                            {emp.specialDuty ? (
                               <div className="mt-0.5">
                                 <SpecialDutyBadge duty={emp.specialDuty} size="xs" />
                               </div>
+                            ) : (
+                              <div className="h-0 min-h-0" />
                             )}
                           </div>
                         </div>
@@ -2434,7 +2436,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                                 });
                               }
                             }}
-                            className={`p-1 text-center align-middle select-none transition relative ${
+                            className={`p-1 text-center align-middle select-none transition relative h-[58px] ${
                               isToday
                                 ? 'bg-amber-50/50 border-x-2 border-x-amber-500 font-bold'
                                 : isSun
@@ -2443,9 +2445,9 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                             } ${canEdit ? 'cursor-pointer hover:bg-amber-100/30' : ''}`}
                             title={`${emp.name} (${day.date.getDate()} ${monthNames[selectedMonth]}): ${matrixStyle.taskDescription}${isToday ? ' [HARI INI]' : ''} | ${canEdit ? 'Klik 1x untuk ganti: Pagi ➜ Siang ➜ Libur (Klik kanan untuk opsi Cuti/Izin)' : ''}`}
                           >
-                            <div className="flex flex-col items-center justify-center space-y-1 min-h-[38px] py-0.5">
+                            <div className="flex flex-col items-center justify-center h-full min-h-[48px] py-0.5">
                               <div
-                                className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs border ${matrixStyle.badgeClass} transition-all shadow-2xs relative hover:scale-105 active:scale-95 ${
+                                className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs border ${matrixStyle.badgeClass} transition-all shadow-2xs relative hover:scale-105 active:scale-95 shrink-0 ${
                                   isToday ? 'ring-2 ring-amber-500 ring-offset-1 font-black shadow-xs' : ''
                                 }`}
                               >
@@ -2455,19 +2457,23 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                                 )}
                               </div>
 
-                              {matrixStyle.badgesToRender && matrixStyle.badgesToRender.length > 0 && (
-                                <div className="flex flex-wrap items-center justify-center gap-0.5 max-w-[48px]">
-                                  {matrixStyle.badgesToRender.map((b, bIdx) => (
-                                    <span
-                                      key={`${b.category}-${bIdx}`}
-                                      className={`px-1 py-0.2 rounded text-[7px] font-black text-white leading-tight ${b.badgeBg}`}
-                                      title={b.name}
-                                    >
-                                      {b.shortCode}
-                                    </span>
-                                  ))}
-                                </div>
-                              )}
+                              <div className="h-3 flex items-center justify-center mt-0.5">
+                                {matrixStyle.badgesToRender && matrixStyle.badgesToRender.length > 0 ? (
+                                  <div className="flex flex-wrap items-center justify-center gap-0.5 max-w-[48px]">
+                                    {matrixStyle.badgesToRender.map((b, bIdx) => (
+                                      <span
+                                        key={`${b.category}-${bIdx}`}
+                                        className={`px-1 py-0.2 rounded text-[7px] font-black text-white leading-tight ${b.badgeBg}`}
+                                        title={b.name}
+                                      >
+                                        {b.shortCode}
+                                      </span>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <div className="h-2.5 invisible"></div>
+                                )}
+                              </div>
                             </div>
                           </td>
                         );
