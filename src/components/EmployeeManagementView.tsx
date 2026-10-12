@@ -15,6 +15,7 @@ import {
   getDoctorNickname
 } from '../utils/scheduler';
 import { storage, isInvalidNurseAccount, isRecapOrSummaryIdentifier } from '../utils/storage';
+import { cloudSync } from '../services/cloudSync';
 import { 
   prepareSyncPayload, 
   pushToGoogleSheets, 
@@ -58,6 +59,33 @@ interface EmployeeManagementViewProps {
   onDeleteEmployee?: (employeeId: string) => void;
   onUpdateSchedule?: (schedules: ShiftSchedule[]) => void;
   onUpdateSettings?: (settings: AppSettings) => void;
+}
+
+export function normalizeEmployeeRole(role?: string, specialization?: string): UserRole {
+  const specLower = (specialization || '').toLowerCase();
+  const roleLower = String(role || '').toLowerCase();
+  if (
+    roleLower === 'kepala_ruangan' ||
+    roleLower === 'karu' ||
+    roleLower === 'kepala_ruang' ||
+    specLower.includes('kepala ruang') ||
+    specLower.includes('kepala ruangan') ||
+    specLower.includes('karu')
+  ) {
+    return 'kepala_ruangan';
+  }
+  if (
+    roleLower === 'pj_shift' ||
+    roleLower === 'katim' ||
+    specLower.includes('pj shift') ||
+    specLower.includes('pj shif') ||
+    specLower.includes('katim')
+  ) {
+    return 'pj_shift';
+  }
+  if (roleLower === 'dokter') return 'dokter';
+  if (roleLower === 'admin') return 'admin';
+  return 'perawat';
 }
 
 export const EmployeeManagementView: React.FC<EmployeeManagementViewProps> = ({
@@ -203,12 +231,23 @@ export const EmployeeManagementView: React.FC<EmployeeManagementViewProps> = ({
   };
 
   const handleQuickChangeNurseRole = (emp: UserAccount, newRole: UserRole) => {
+    let nextSpec = emp.specialization;
+    if (newRole === 'kepala_ruangan' && (!nextSpec || /perawat pelaksana/i.test(nextSpec))) {
+      nextSpec = 'Kepala Ruang Hemodialisa';
+    } else if (newRole === 'pj_shift' && (!nextSpec || /perawat pelaksana/i.test(nextSpec))) {
+      nextSpec = 'KATIM / Perawat Mahir HD';
+    } else if (newRole === 'perawat' && (/kepala ruang/i.test(nextSpec || '') || /katim/i.test(nextSpec || ''))) {
+      nextSpec = 'Perawat Pelaksana HD';
+    }
+
+    const updatedEmp: UserAccount = { ...emp, role: newRole, specialization: nextSpec };
     const updated = employees.map((e) =>
-      e.id === emp.id ? { ...e, role: newRole } : e
+      e.id === emp.id ? updatedEmp : e
     );
     onUpdateEmployees(updated);
+    cloudSync.saveSingleEmployee(updatedEmp).catch(() => {});
     const roleLabel = newRole === 'kepala_ruangan' ? 'Kepala Ruang' : (newRole === 'pj_shift' || (newRole as string) === 'katim') ? 'KATIM' : 'Perawat Pelaksana';
-    showToast(`Peran ${emp.name} diubah menjadi "${roleLabel}". Catatan: Peran/Jabatan tidak merubah warna tombol jadwal.`);
+    showToast(`Peran ${emp.name} diubah menjadi "${roleLabel}".`);
   };
 
   const handleQuickChangeNurseSpecialDuty = (emp: UserAccount, newDuty: string) => {
@@ -326,6 +365,39 @@ export const EmployeeManagementView: React.FC<EmployeeManagementViewProps> = ({
         ? getDoctorNickname({ name: form.name.trim(), nickname: cleanNickname, role: 'dokter', id: editingEmployee.id })
         : cleanNickname;
 
+      // Normalisasi peran & deteksi input jabatan / spesialisasi
+      let targetRole: UserRole = (form.role || editingEmployee.role || 'perawat') as UserRole;
+      let effectiveSpec = (form.specialization || '').trim();
+      const specLower = effectiveSpec.toLowerCase();
+
+      if (
+        specLower.includes('kepala ruang') ||
+        specLower.includes('kepala ruangan') ||
+        specLower.includes('karu') ||
+        targetRole === 'kepala_ruangan' ||
+        (targetRole as string) === 'karu'
+      ) {
+        targetRole = 'kepala_ruangan';
+        if (!effectiveSpec || /perawat pelaksana/i.test(effectiveSpec)) {
+          effectiveSpec = 'Kepala Ruang Hemodialisa';
+        }
+      } else if (
+        specLower.includes('katim') ||
+        specLower.includes('pj shift') ||
+        specLower.includes('pj shif') ||
+        targetRole === 'pj_shift' ||
+        (targetRole as string) === 'katim'
+      ) {
+        targetRole = 'pj_shift';
+        if (!effectiveSpec || /perawat pelaksana/i.test(effectiveSpec)) {
+          effectiveSpec = 'KATIM / Perawat Mahir HD';
+        }
+      } else if (targetRole === 'perawat') {
+        if (/kepala ruang/i.test(effectiveSpec) || /katim/i.test(effectiveSpec)) {
+          effectiveSpec = 'Perawat Pelaksana HD';
+        }
+      }
+
       const updatedEmp: UserAccount = {
         id: editingEmployee.id,
         name: form.name.trim(),
@@ -333,12 +405,12 @@ export const EmployeeManagementView: React.FC<EmployeeManagementViewProps> = ({
         gender: (form.gender as 'L' | 'P') || getEmployeeGender({ name: form.name, nip: form.nip || '', id: editingEmployee.id } as any),
         username: usernameClean,
         password: form.password && form.password.trim() ? form.password.trim() : editingEmployee.password,
-        role: form.role as UserRole,
+        role: targetRole,
         nip: (form.nip || '').trim(),
         phone: (form.phone || '').trim(),
         email: (form.email || '').trim() || `${usernameClean}@hospital.id`,
         status: (form.status as 'aktif' | 'nonaktif') || 'aktif',
-        specialization: (form.specialization || '').trim(),
+        specialization: effectiveSpec,
         specialDuty: form.specialDuty !== undefined ? form.specialDuty : editingEmployee.specialDuty,
         skillLevel: form.skillLevel || editingEmployee.skillLevel || 'Senior',
         createdAt: editingEmployee.createdAt || new Date().toISOString().substring(0, 10),
@@ -348,15 +420,21 @@ export const EmployeeManagementView: React.FC<EmployeeManagementViewProps> = ({
         emp.id === editingEmployee.id ? updatedEmp : emp
       );
 
-      // If updating currently logged in user, keep session in sync
+      // 1. Simpan ke state & storage lokal terlebih dahulu
+      onUpdateEmployees(updated);
+
+      // 2. Simpan langsung ke Firestore dokumen perorangan agar tidak tertimpa snapshot lama
+      cloudSync.saveSingleEmployee(updatedEmp).catch((err) => console.warn('[CloudSync] saveSingleEmployee:', err));
+
+      // 3. Sinkronkan sesi jika yang diedit adalah akun yang sedang login
       if (editingEmployee.id === currentUser.id) {
         storage.setCurrentUser(updatedEmp);
       }
 
-      onUpdateEmployees(updated);
       setEditingEmployee(null);
       setShowAddModal(false);
-      showToast(`Data akun ${updatedEmp.name} berhasil disimpan & informasi lama diperbarui.`);
+      const roleName = targetRole === 'kepala_ruangan' ? 'Kepala Ruang' : targetRole === 'pj_shift' ? 'KATIM' : targetRole === 'dokter' ? 'Dokter' : targetRole === 'admin' ? 'Admin' : 'Perawat Pelaksana';
+      showToast(`Data akun ${updatedEmp.name} berhasil disimpan. Jabatan aktif: ${roleName}.`);
     } else {
       // Add new
       if (!form.password) {
@@ -1109,12 +1187,12 @@ export const EmployeeManagementView: React.FC<EmployeeManagementViewProps> = ({
                           </td>
                           <td className="p-3">
                             <select
-                              value={emp.role}
+                              value={normalizeEmployeeRole(emp.role, emp.specialization)}
                               onChange={(e) => handleQuickChangeNurseRole(emp, e.target.value as UserRole)}
                               className={`px-2.5 py-1 text-[11px] font-bold rounded-lg border cursor-pointer transition ${
-                                emp.role === 'kepala_ruangan'
+                                normalizeEmployeeRole(emp.role, emp.specialization) === 'kepala_ruangan'
                                   ? 'bg-amber-50 text-amber-900 border-amber-300 focus:ring-amber-500'
-                                  : emp.role === 'pj_shift'
+                                  : normalizeEmployeeRole(emp.role, emp.specialization) === 'pj_shift'
                                   ? 'bg-emerald-50 text-emerald-900 border-emerald-300 focus:ring-emerald-500'
                                   : 'bg-teal-50 text-teal-900 border-teal-300 focus:ring-teal-500'
                               }`}
@@ -1185,6 +1263,7 @@ export const EmployeeManagementView: React.FC<EmployeeManagementViewProps> = ({
                               </button>
                               <button
                                 onClick={() => {
+                                  const effectiveRole = normalizeEmployeeRole(emp.role, emp.specialization);
                                   setEditingEmployee(emp);
                                   setForm({
                                     name: emp.name,
@@ -1192,12 +1271,12 @@ export const EmployeeManagementView: React.FC<EmployeeManagementViewProps> = ({
                                     gender: emp.gender || getEmployeeGender(emp),
                                     username: emp.username,
                                     password: '',
-                                    role: emp.role,
+                                    role: effectiveRole,
                                     nip: emp.nip,
                                     phone: emp.phone,
                                     email: emp.email,
                                     status: emp.status,
-                                    specialization: emp.specialization || '',
+                                    specialization: emp.specialization || (effectiveRole === 'kepala_ruangan' ? 'Kepala Ruang Hemodialisa' : effectiveRole === 'pj_shift' ? 'KATIM / Perawat Mahir HD' : 'Perawat Pelaksana HD'),
                                     specialDuty: emp.specialDuty || '',
                                     skillLevel: emp.skillLevel || 'Senior',
                                   });
@@ -1329,8 +1408,25 @@ export const EmployeeManagementView: React.FC<EmployeeManagementViewProps> = ({
                       4. Peran / Jabatan <span className="text-rose-500">*</span>
                     </label>
                     <select
-                      value={form.role || 'perawat'}
-                      onChange={(e) => setForm({ ...form, role: e.target.value as UserRole })}
+                      value={normalizeEmployeeRole(form.role, form.specialization)}
+                      onChange={(e) => {
+                        const newRole = e.target.value as UserRole;
+                        let nextSpec = form.specialization || '';
+                        if (newRole === 'kepala_ruangan') {
+                          if (!nextSpec || /perawat pelaksana/i.test(nextSpec)) {
+                            nextSpec = 'Kepala Ruang Hemodialisa';
+                          }
+                        } else if (newRole === 'pj_shift') {
+                          if (!nextSpec || /perawat pelaksana/i.test(nextSpec)) {
+                            nextSpec = 'KATIM / Perawat Mahir HD';
+                          }
+                        } else if (newRole === 'perawat') {
+                          if (/kepala ruang/i.test(nextSpec) || /katim/i.test(nextSpec)) {
+                            nextSpec = 'Perawat Pelaksana HD';
+                          }
+                        }
+                        setForm({ ...form, role: newRole, specialization: nextSpec });
+                      }}
                       className="w-full px-3 py-2 border border-slate-200 rounded-xl focus:outline-hidden focus:ring-2 focus:ring-teal-500 font-bold text-slate-800 bg-white cursor-pointer"
                     >
                       <option value="perawat">Perawat Pelaksana</option>
@@ -1551,13 +1647,22 @@ export const EmployeeManagementView: React.FC<EmployeeManagementViewProps> = ({
                       </div>
                       <div>
                         <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                          Keahlian / Sertifikasi HD:
+                          Jabatan & Keahlian / Spesialisasi:
                         </label>
                         <input
                           type="text"
                           value={form.specialization || ''}
-                          onChange={(e) => setForm({ ...form, specialization: e.target.value })}
-                          placeholder="Contoh: Kanulasi CDL / Sertifikasi HD"
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            let newRole = form.role;
+                            if (/kepala\s*ruang|karu/i.test(val)) {
+                              newRole = 'kepala_ruangan';
+                            } else if (/katim|pj\s*shift/i.test(val)) {
+                              newRole = 'pj_shift';
+                            }
+                            setForm({ ...form, specialization: val, role: newRole });
+                          }}
+                          placeholder="Contoh: Kepala Ruang Hemodialisa / Kanulasi CDL"
                           className="w-full px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-teal-500 text-slate-800 bg-white"
                         />
                       </div>

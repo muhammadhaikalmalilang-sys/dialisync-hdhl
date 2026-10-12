@@ -49,12 +49,13 @@ export function isRecapOrSummaryIdentifier(raw: any): boolean {
     return true;
   }
 
-  // 3. Kata tanda tangan / pimpinan di footer yang terbawa
+  // 3. Kata tanda tangan / pimpinan di footer yang terbawa dari lembar cetak
   if (
-    lower.includes('mengetahui') ||
-    lower.includes('kepala ruangan') ||
-    lower.includes('tanda tangan') ||
-    lower.includes('direktur') ||
+    lower.startsWith('mengetahui') ||
+    lower.startsWith('tanda tangan') ||
+    lower === 'kepala ruangan' ||
+    lower === 'kepala ruang' ||
+    lower === 'direktur' ||
     lower === 'ttd'
   ) {
     return true;

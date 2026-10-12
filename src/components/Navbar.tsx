@@ -125,93 +125,46 @@ export const Navbar: React.FC<NavbarProps> = ({
   });
 
   return (
-    <header className="bg-gradient-to-r from-teal-950 via-slate-900 to-cyan-950 text-white border-b border-teal-800/50 sticky top-0 z-40 shadow-md">
-      {/* Top Banner with Hospital Info and Real-time Clock */}
-      <div className="bg-black/35 text-slate-200 border-b border-teal-900/50">
-        <div className="max-w-[1680px] mx-auto px-3 sm:px-6 lg:px-8 py-1.5 text-[10px] sm:text-xs font-medium flex flex-wrap items-center justify-between gap-y-1">
-          <div className="flex items-center space-x-2 sm:space-x-3 overflow-hidden">
-            <span className="flex items-center text-teal-300 font-semibold tracking-wide shrink-0">
-              <Activity className="w-3 h-3 sm:w-3.5 sm:h-3.5 mr-1 animate-pulse text-teal-400" />
-              <span className="hidden sm:inline">UNIT DIALISIS - </span>RS HAPPY LAND<span className="hidden md:inline"> MEDICAL CENTRE YOGYAKARTA</span>
-            </span>
-            <span className="text-slate-600 hidden sm:inline">|</span>
-            <div className="flex items-center space-x-1 sm:space-x-1.5 text-[10px] sm:text-xs shrink-0">
-              <span className="text-slate-400 hidden lg:inline">Database Cloud:</span>
-              {syncStatus === 'connected' ? (
-                <span className="inline-flex items-center text-emerald-300 font-semibold bg-emerald-950/70 px-2 py-0.5 rounded-full border border-emerald-700/60 shadow-2xs">
-                  <span className="w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full bg-emerald-400 animate-ping mr-1 sm:mr-1.5 shrink-0"></span>
-                  <span><span className="hidden sm:inline">Firestore </span>Cloud Aktif</span>
-                </span>
-              ) : syncStatus === 'connecting' ? (
-                <span className="inline-flex items-center text-amber-300 font-medium bg-amber-950/70 px-2 py-0.5 rounded-full border border-amber-700/60">
-                  <span className="w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full bg-amber-400 animate-pulse mr-1 sm:mr-1.5 shrink-0"></span>
-                  <span>Sinkronisasi...</span>
-                </span>
-              ) : (
-                <span className="inline-flex items-center text-cyan-300 font-medium bg-cyan-950/70 px-2 py-0.5 rounded-full border border-cyan-800/60">
-                  <span className="w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full bg-cyan-400 mr-1 sm:mr-1.5 shrink-0"></span>
-                  <span>Offline</span>
-                </span>
-              )}
-            </div>
-
-            {/* Google Sheets Sync Pill in Top Banner */}
-            <span className="text-slate-600 hidden md:inline">|</span>
-            <div className="hidden md:flex items-center space-x-1 sm:space-x-1.5 text-[10px] sm:text-xs shrink-0">
-              <span className="text-slate-400 hidden lg:inline">Google Sheets:</span>
-              <span className="inline-flex items-center text-teal-300 font-semibold bg-teal-950/70 px-2 py-0.5 rounded-full border border-teal-700/60">
-                <FileSpreadsheet className="w-3 h-3 text-emerald-400 mr-1" />
-                <span>Tarik & Kirim Siap</span>
-              </span>
-            </div>
-          </div>
-
-          <div className="flex items-center space-x-2 ml-auto text-slate-300 text-[10px] sm:text-xs">
-            <div className="flex items-center space-x-1.5 bg-teal-950/60 px-2 sm:px-2.5 py-0.5 rounded-full border border-teal-800/60">
-              <Calendar className="w-2.5 h-2.5 sm:w-3 sm:h-3 text-teal-400" />
-              <span className="hidden xs:inline">{dateString}</span>
-              <span className="text-slate-600 hidden xs:inline">•</span>
-              <Clock className="w-2.5 h-2.5 sm:w-3 sm:h-3 text-teal-400" />
-              <span className="font-mono text-teal-300 font-semibold">{timeString} WIB</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
+    <header className="bg-slate-900/98 text-white border-b border-slate-800 sticky top-0 z-40 shadow-lg backdrop-blur-md">
       {/* Main Navigation Bar */}
       <div className="max-w-[1680px] mx-auto px-3 sm:px-6 lg:px-8">
-        <div className="flex justify-between h-14 sm:h-16 items-center gap-2">
+        <div className="flex justify-between h-15 sm:h-16 items-center gap-2 sm:gap-4">
           {/* Logo & Title */}
-          <div className="flex items-center space-x-2 sm:space-x-3 shrink-0">
-            <div className="h-8 sm:h-10 md:h-11 px-1.5 sm:px-2.5 py-0.5 sm:py-1 bg-white rounded-xl shadow-md shadow-teal-500/10 flex items-center justify-center border border-teal-400/30 shrink-0">
+          <div className="flex items-center space-x-2.5 sm:space-x-3.5 shrink-0">
+            <div className="h-9 sm:h-10 px-2 py-1 bg-white rounded-xl shadow-xs flex items-center justify-center border border-slate-200/20 shrink-0">
               <img
                 src="/logo_rshl.png"
                 onError={(e) => {
                   e.currentTarget.src = 'https://rshappyland.com/dist/img/logo/logo_happyland.png';
                 }}
                 alt="Logo RSHL Rumah Sakit Happy Land"
-                className="h-full w-auto max-h-6 sm:max-h-7 md:max-h-8 object-contain"
+                className="h-full w-auto max-h-6 sm:max-h-7 object-contain"
                 referrerPolicy="no-referrer"
               />
             </div>
-            <div>
-              <h1 id="app-header-title" className="text-sm sm:text-base md:text-xl font-black tracking-wider text-transparent bg-clip-text bg-gradient-to-r from-teal-100 via-white to-cyan-200 leading-none">
-                DIALISYNC
-              </h1>
-              <span className="text-[9px] sm:text-[10px] md:text-xs text-teal-300/90 font-semibold tracking-wide block mt-0.5 sm:mt-1">
-                RS Happy Land HD
+            <div className="flex flex-col">
+              <div className="flex items-center gap-2">
+                <h1 id="app-header-title" className="text-base sm:text-lg md:text-xl font-black tracking-wider text-white leading-none">
+                  DIALISYNC
+                </h1>
+                <span className="hidden xl:inline text-[10px] font-semibold text-teal-300 bg-teal-950/80 border border-teal-800/60 px-2 py-0.5 rounded-md">
+                  Unit Hemodialisa
+                </span>
+              </div>
+              <span className="text-[10px] sm:text-[11px] text-slate-400 font-medium tracking-wide mt-0.5">
+                RS Happy Land Medical Centre
               </span>
             </div>
           </div>
 
-          {/* Nav Tabs */}
-          <nav className="hidden md:flex items-center space-x-1 lg:space-x-1.5">
+          {/* Centered Segmented Nav Tabs */}
+          <nav className="hidden lg:flex items-center bg-slate-950/70 p-1 rounded-xl border border-slate-800/80 shadow-inner space-x-1">
             <button
               onClick={() => setActiveTab('dashboard')}
-              className={`h-10 px-3.5 rounded-xl text-sm font-semibold transition-colors flex items-center space-x-2 shrink-0 cursor-pointer ${
+              className={`h-9 px-3.5 rounded-lg text-xs sm:text-[13px] font-semibold transition-all flex items-center space-x-2 shrink-0 cursor-pointer ${
                 activeTab === 'dashboard'
                   ? 'bg-teal-500/25 text-teal-300 border border-teal-400/50 shadow-xs'
-                  : 'text-slate-300 hover:text-white hover:bg-white/10'
+                  : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
               }`}
             >
               <Activity className="w-4 h-4" />
@@ -220,10 +173,10 @@ export const Navbar: React.FC<NavbarProps> = ({
 
             <button
               onClick={() => setActiveTab('jadwal')}
-              className={`h-10 px-3.5 rounded-xl text-sm font-semibold transition-colors flex items-center space-x-2 shrink-0 cursor-pointer ${
+              className={`h-9 px-3.5 rounded-lg text-xs sm:text-[13px] font-semibold transition-all flex items-center space-x-2 shrink-0 cursor-pointer ${
                 activeTab === 'jadwal'
                   ? 'bg-teal-500/25 text-teal-300 border border-teal-400/50 shadow-xs'
-                  : 'text-slate-300 hover:text-white hover:bg-white/10'
+                  : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
               }`}
             >
               <Calendar className="w-4 h-4" />
@@ -232,10 +185,10 @@ export const Navbar: React.FC<NavbarProps> = ({
 
             <button
               onClick={() => setActiveTab('mesin')}
-              className={`h-10 px-3.5 rounded-xl text-sm font-semibold transition-colors flex items-center space-x-2 shrink-0 cursor-pointer ${
+              className={`h-9 px-3.5 rounded-lg text-xs sm:text-[13px] font-semibold transition-all flex items-center space-x-2 shrink-0 cursor-pointer ${
                 activeTab === 'mesin'
                   ? 'bg-teal-500/25 text-teal-300 border border-teal-400/50 shadow-xs'
-                  : 'text-slate-300 hover:text-white hover:bg-white/10'
+                  : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
               }`}
             >
               <Layers className="w-4 h-4" />
@@ -244,10 +197,10 @@ export const Navbar: React.FC<NavbarProps> = ({
 
             <button
               onClick={() => setActiveTab('tugas')}
-              className={`h-10 px-3.5 rounded-xl text-sm font-semibold transition-colors flex items-center space-x-2 shrink-0 cursor-pointer ${
+              className={`h-9 px-3.5 rounded-lg text-xs sm:text-[13px] font-semibold transition-all flex items-center space-x-2 shrink-0 cursor-pointer ${
                 activeTab === 'tugas'
                   ? 'bg-teal-500/25 text-teal-300 border border-teal-400/50 shadow-xs'
-                  : 'text-slate-300 hover:text-white hover:bg-white/10'
+                  : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
               }`}
             >
               <Activity className="w-4 h-4" />
@@ -257,10 +210,10 @@ export const Navbar: React.FC<NavbarProps> = ({
             {currentUser.role === 'admin' && (
               <button
                 onClick={() => setActiveTab('karyawan')}
-                className={`h-10 px-3.5 rounded-xl text-sm font-semibold transition-colors flex items-center space-x-2 shrink-0 cursor-pointer ${
+                className={`h-9 px-3.5 rounded-lg text-xs sm:text-[13px] font-semibold transition-all flex items-center space-x-2 shrink-0 cursor-pointer ${
                   activeTab === 'karyawan'
                     ? 'bg-purple-500/25 text-purple-300 border border-purple-400/50 shadow-xs'
-                    : 'text-slate-300 hover:text-white hover:bg-white/10'
+                    : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
                 }`}
               >
                 <Shield className="w-4 h-4" />
@@ -269,16 +222,25 @@ export const Navbar: React.FC<NavbarProps> = ({
             )}
           </nav>
 
-          {/* User Profile & Quick Switcher */}
+          {/* User Profile, Clock & Actions */}
           <div className="flex items-center space-x-2 sm:space-x-2.5">
+            {/* Real-time Clock & Date Display */}
+            <div className="hidden xl:flex items-center space-x-2 text-xs text-slate-300 bg-slate-950/60 px-3 py-1.5 rounded-xl border border-slate-800/80 shrink-0">
+              <Calendar className="w-3.5 h-3.5 text-teal-400" />
+              <span>{dateString}</span>
+              <span className="text-slate-600">·</span>
+              <Clock className="w-3.5 h-3.5 text-teal-400" />
+              <span className="font-mono text-teal-300 font-bold">{timeString} WIB</span>
+            </div>
+
             {/* Quick Switch Dropdown for interactive demo testing */}
             <div className="relative">
               <button
                 onClick={() => setShowSwitchMenu(!showSwitchMenu)}
-                className="flex items-center space-x-2 px-2.5 sm:px-3 rounded-xl border border-teal-800/60 hover:border-teal-600 bg-slate-800/80 hover:bg-slate-800 text-left transition h-10 cursor-pointer shrink-0 shadow-xs active:scale-98"
+                className="flex items-center space-x-2 px-2.5 sm:px-3 rounded-xl border border-slate-700/80 hover:border-teal-600/70 bg-slate-800/90 hover:bg-slate-800 text-left transition h-9.5 cursor-pointer shrink-0 shadow-xs active:scale-98"
                 title="Ganti sudut pandang / peran akun staf"
               >
-                <div className="w-7 h-7 sm:w-7.5 sm:h-7.5 rounded-lg bg-teal-500 text-slate-950 font-bold flex items-center justify-center text-xs shrink-0 shadow-xs">
+                <div className="w-7 h-7 rounded-lg bg-teal-500 text-slate-950 font-bold flex items-center justify-center text-xs shrink-0 shadow-xs">
                   {currentUser.name.substring(0, 2).toUpperCase()}
                 </div>
                 <div className="hidden sm:block">
@@ -291,7 +253,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                     </span>
                   </div>
                 </div>
-                <ChevronDown className={`w-3.5 h-3.5 text-teal-300 shrink-0 transition-transform ${showSwitchMenu ? 'rotate-180' : ''}`} />
+                <ChevronDown className={`w-3.5 h-3.5 text-slate-400 shrink-0 transition-transform ${showSwitchMenu ? 'rotate-180' : ''}`} />
               </button>
 
               {showSwitchMenu && (
@@ -360,16 +322,16 @@ export const Navbar: React.FC<NavbarProps> = ({
 
             <button
               onClick={onLogout}
-              className="w-10 h-10 rounded-xl bg-slate-800/80 hover:bg-rose-950/60 border border-teal-800/60 hover:border-rose-700/60 text-slate-300 hover:text-rose-300 transition-all flex items-center justify-center shrink-0 cursor-pointer shadow-xs active:scale-95"
+              className="w-9.5 h-9.5 rounded-xl bg-slate-800/90 hover:bg-rose-950/60 border border-slate-700/80 hover:border-rose-700/60 text-slate-300 hover:text-rose-300 transition-all flex items-center justify-center shrink-0 cursor-pointer shadow-xs active:scale-95"
               title="Keluar dari akun (Logout)"
             >
-              <LogOut className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
+              <LogOut className="w-4 h-4" />
             </button>
           </div>
         </div>
 
-        {/* Mobile Tab Navigation (Horizontal Scroll with Touch-Friendly Pills) */}
-        <div className="md:hidden flex items-center space-x-1.5 py-2 overflow-x-auto border-t border-teal-900/40 scrollbar-none px-1">
+        {/* Mobile Tab Navigation (Horizontal Scroll with Touch-Friendly Items) */}
+        <div className="lg:hidden flex items-center space-x-1.5 py-2 overflow-x-auto border-t border-slate-800/80 scrollbar-none px-1">
           <button
             onClick={() => setActiveTab('dashboard')}
             className={`h-9 px-3.5 rounded-xl text-xs font-bold whitespace-nowrap flex items-center gap-1.5 transition active:scale-95 cursor-pointer shrink-0 border ${
@@ -447,6 +409,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           onUpdateSpecialTasks={onUpdateSpecialTasks}
           operationalDate={operationalDate}
           canEdit={currentUser.role === 'admin' || currentUser.role === 'kepala_ruangan' || currentUser.role === 'karu' || currentUser.role === 'pj_shift'}
+          syncStatus={syncStatus}
         />
       )}
     </header>

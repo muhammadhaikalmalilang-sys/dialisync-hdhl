@@ -485,21 +485,20 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   return (
     <div className="space-y-6">
       {/* Top Banner with Operational Status */}
-      <div className="bg-gradient-to-r from-teal-900 via-slate-900 to-cyan-950 rounded-2xl p-4 sm:p-6 text-white shadow-lg border border-teal-800/40 relative overflow-hidden">
+      <div className="bg-slate-900 rounded-2xl p-4 sm:p-6 text-white shadow-md border border-slate-800 relative overflow-hidden">
         <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
             <div className="flex items-center space-x-2 text-teal-400 text-[10px] sm:text-xs font-bold uppercase tracking-wider mb-1">
               <span className="flex h-2 w-2 relative">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-teal-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-teal-500"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-teal-400"></span>
               </span>
-              <span>Unit Dialisis RS Happy Land • {formattedDateLong}</span>
+              <span>Unit Hemodialisa RS Happy Land · {formattedDateLong}</span>
             </div>
             <h2 className="text-lg sm:text-2xl font-extrabold tracking-tight">
               Selamat Bertugas, {currentUser.name}
             </h2>
             <p className="text-slate-300 text-xs sm:text-sm mt-1 max-w-2xl leading-relaxed">
-              Pantau daftar perawat dinas per shif, rangkuman tugas khusus, alokasi mesin pasien, dan ketersediaan mesin HD aktif secara real-time.
+              Pantau daftar perawat dinas per shif, dokter jaga HD, rangkuman tugas khusus, alokasi pasien, dan ketersediaan mesin HD aktif secara real-time.
             </p>
           </div>
         </div>
@@ -552,7 +551,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <span>Hari Minggu - Libur Rutin Seluruh Staf HD</span>
               </span>
             ) : (
-              <span className="text-[10px] sm:text-[11px] text-slate-500">
+              <span className="text-[10px] sm:text-[11px] text-slate-500 font-medium">
                 Operasional Unit Hemodialisa (Shif Pagi &amp; Siang)
               </span>
             )}
@@ -562,31 +561,31 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         {/* Machine Status Summary Strip */}
         <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2 sm:gap-2.5 w-full lg:w-auto">
           {/* Shift Pagi Active Counter */}
-          <div className="px-3 py-2 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center space-x-2 text-xs">
+          <div className="px-3.5 py-2 rounded-xl bg-emerald-50/70 border border-emerald-200 flex items-center space-x-2.5 text-xs shadow-2xs">
             <div className="p-1.5 rounded-lg bg-emerald-600 text-white shrink-0">
               <Sun className="w-3.5 h-3.5" />
             </div>
             <div>
-              <span className="text-[9px] sm:text-[10px] text-emerald-800 font-semibold uppercase tracking-wider block">
+              <span className="text-[9px] sm:text-[10px] text-emerald-800 font-bold uppercase tracking-wider block">
                 Mesin Shif Pagi
               </span>
-              <span className="font-extrabold text-emerald-950 text-xs sm:text-sm">
-                {activeCountPagi} <span className="text-[10px] sm:text-xs font-semibold text-emerald-700">/ {totalRegisteredMachines} Unit</span>
+              <span className="font-black text-emerald-950 text-xs sm:text-sm">
+                {activeCountPagi} <span className="text-[10px] sm:text-xs font-medium text-emerald-700">/ {totalRegisteredMachines} Unit</span>
               </span>
             </div>
           </div>
 
           {/* Shift Siang Active Counter */}
-          <div className="px-3 py-2 rounded-xl bg-pink-50 border border-pink-200 flex items-center space-x-2 text-xs">
+          <div className="px-3.5 py-2 rounded-xl bg-pink-50/70 border border-pink-200 flex items-center space-x-2.5 text-xs shadow-2xs">
             <div className="p-1.5 rounded-lg bg-pink-600 text-white shrink-0">
               <Moon className="w-3.5 h-3.5" />
             </div>
             <div>
-              <span className="text-[9px] sm:text-[10px] text-pink-800 font-semibold uppercase tracking-wider block">
+              <span className="text-[9px] sm:text-[10px] text-pink-800 font-bold uppercase tracking-wider block">
                 Mesin Shif Siang
               </span>
-              <span className="font-extrabold text-pink-950 text-xs sm:text-sm">
-                {activeCountSiang} <span className="text-[10px] sm:text-xs font-semibold text-pink-700">/ {totalRegisteredMachines} Unit</span>
+              <span className="font-black text-pink-950 text-xs sm:text-sm">
+                {activeCountSiang} <span className="text-[10px] sm:text-xs font-medium text-pink-700">/ {totalRegisteredMachines} Unit</span>
               </span>
             </div>
           </div>

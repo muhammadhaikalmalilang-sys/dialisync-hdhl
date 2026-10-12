@@ -1155,17 +1155,37 @@ export function getNurseScheduleSortPriority(emp: {
 }): number {
   const gender = getEmployeeGender(emp as any);
   const roleStr = String(emp.role || '').toLowerCase();
+  const specStr = String((emp as any)?.specialization || '').toLowerCase();
 
   // 1. Kepala ruang
-  if (roleStr === 'kepala_ruangan' || roleStr === 'karu') {
+  if (
+    roleStr === 'kepala_ruangan' ||
+    roleStr === 'karu' ||
+    roleStr === 'kepala_ruang' ||
+    specStr.includes('kepala ruang') ||
+    specStr.includes('kepala ruangan') ||
+    specStr.includes('karu')
+  ) {
     return 1;
   }
   // 2. PJ Shif Laki-laki
-  if ((roleStr === 'pj_shift' || roleStr === 'katim') && gender === 'L') {
+  if (
+    ((roleStr === 'pj_shift' || roleStr === 'katim') ||
+      specStr.includes('pj shift') ||
+      specStr.includes('pj shif') ||
+      specStr.includes('katim')) &&
+    gender === 'L'
+  ) {
     return 2;
   }
   // 3. PJ Shif Perempuan
-  if ((roleStr === 'pj_shift' || roleStr === 'katim') && gender === 'P') {
+  if (
+    ((roleStr === 'pj_shift' || roleStr === 'katim') ||
+      specStr.includes('pj shift') ||
+      specStr.includes('pj shif') ||
+      specStr.includes('katim')) &&
+    gender === 'P'
+  ) {
     return 3;
   }
   // 4. Perawat pelaksana Laki-laki

@@ -588,7 +588,6 @@ export const cloudSync = {
         const hash = getObjectHash(emp);
         if (lastSyncedHashes.get(`emp_${emp.id}`) !== hash) {
           changedEmployees.push(emp);
-          lastSyncedHashes.set(`emp_${emp.id}`, hash);
         }
       });
 
@@ -604,6 +603,9 @@ export const cloudSync = {
           batch.set(ref, sanitizeForFirestore(emp));
         });
         await batch.commit();
+        chunk.forEach((emp) => {
+          lastSyncedHashes.set(`emp_${emp.id}`, getObjectHash(emp));
+        });
       }
     } catch (e: any) {
       if (isQuotaExceededError(e)) {
@@ -621,11 +623,9 @@ export const cloudSync = {
     if (isQuotaPaused()) return;
     try {
       const hash = getObjectHash(emp);
-      if (lastSyncedHashes.get(`emp_${emp.id}`) === hash) return;
-      lastSyncedHashes.set(`emp_${emp.id}`, hash);
-
       const ref = doc(db, COLLECTIONS.EMPLOYEES, emp.id);
       await setDoc(ref, sanitizeForFirestore(emp));
+      lastSyncedHashes.set(`emp_${emp.id}`, hash);
     } catch (e: any) {
       if (isQuotaExceededError(e)) {
         markQuotaExceeded();

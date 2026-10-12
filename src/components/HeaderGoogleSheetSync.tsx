@@ -60,6 +60,8 @@ import { GoogleScriptGuideModal } from './GoogleScriptGuideModal';
 import { WhatsAppShareModal } from './WhatsAppShareModal';
 import { NurseReminderModal } from './NurseReminderModal';
 
+import { SyncStatus } from '../services/cloudSync';
+
 interface HeaderGoogleSheetSyncProps {
   schedules: ShiftSchedule[];
   employees: UserAccount[];
@@ -75,6 +77,7 @@ interface HeaderGoogleSheetSyncProps {
   onUpdateSpecialTasks?: (newTasks: SpecialTask[]) => void;
   operationalDate?: string;
   canEdit?: boolean;
+  syncStatus?: SyncStatus;
 }
 
 export const HeaderGoogleSheetSync: React.FC<HeaderGoogleSheetSyncProps> = ({
@@ -91,6 +94,7 @@ export const HeaderGoogleSheetSync: React.FC<HeaderGoogleSheetSyncProps> = ({
   onUpdateSpecialTasks,
   operationalDate,
   canEdit = true,
+  syncStatus = 'connected',
 }) => {
   // Determine active month (e.g. "2026-09")
   const defaultMonth = operationalDate
@@ -689,33 +693,36 @@ export const HeaderGoogleSheetSync: React.FC<HeaderGoogleSheetSyncProps> = ({
   };
 
   return (
-    <div id="header-google-sheet-sync-bar" className="w-full bg-slate-900/95 text-white border-b border-teal-800/40 backdrop-blur-md px-3 sm:px-6 lg:px-8 py-2 sm:py-2.5 transition-all">
+    <div id="header-google-sheet-sync-bar" className="w-full bg-slate-950/90 text-white border-b border-slate-800/80 backdrop-blur-md px-3 sm:px-6 lg:px-8 py-2 transition-all">
       <div className="max-w-[1680px] mx-auto flex flex-wrap items-center justify-between gap-2.5 sm:gap-3">
         {/* Left: Periode Jadwal & Month Selector */}
         <div className="flex items-center space-x-2 sm:space-x-3">
-          <div className="flex items-center space-x-1 bg-slate-800/90 border border-slate-700/80 px-2 sm:px-2.5 rounded-xl shrink-0 h-9">
+          <div className="flex items-center space-x-1 bg-slate-900/95 border border-slate-700/80 p-0.5 sm:p-1 rounded-xl shrink-0 h-9 shadow-inner">
             <button
               onClick={handlePrevMonth}
-              className="p-1 text-slate-400 hover:text-white hover:bg-slate-700/80 rounded-lg transition-colors cursor-pointer"
+              className="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
               title="Pindah ke Bulan Sebelumnya"
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
 
-            <div className="flex items-center space-x-1.5 px-1">
-              <Calendar className="w-4 h-4 text-teal-400 shrink-0" />
+            <div className="relative flex items-center space-x-1.5 px-2">
+              <Calendar className="w-3.5 h-3.5 text-teal-400 shrink-0" />
+              <span className="text-xs sm:text-[13px] font-bold text-slate-100 tracking-wide select-none">
+                {displayMonthName}
+              </span>
               <input
                 type="month"
                 value={selectedMonth}
                 onChange={(e) => changeSelectedMonth(e.target.value)}
-                className="bg-transparent text-teal-200 text-xs sm:text-[13px] font-bold border-none outline-hidden cursor-pointer p-0 w-[118px]"
-                title="Pilih bulan jadwal"
+                className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                title="Pilih bulan jadwal dari kalender"
               />
             </div>
 
             <button
               onClick={handleNextMonth}
-              className="p-1 text-slate-400 hover:text-white hover:bg-slate-700/80 rounded-lg transition-colors cursor-pointer"
+              className="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
               title="Pindah ke Bulan Berikutnya"
             >
               <ChevronRight className="w-4 h-4" />
@@ -723,16 +730,44 @@ export const HeaderGoogleSheetSync: React.FC<HeaderGoogleSheetSyncProps> = ({
 
             <button
               onClick={handleCurrentMonth}
-              className="px-2 py-0.5 text-[11px] font-bold bg-teal-950/90 text-teal-300 hover:bg-teal-900 rounded-lg border border-teal-800/60 transition-colors cursor-pointer ml-1 hidden sm:inline"
+              className="px-2 py-0.5 text-[11px] font-bold bg-teal-950 hover:bg-teal-900 text-teal-300 rounded-lg border border-teal-800/60 transition-colors cursor-pointer ml-1 hidden sm:inline"
               title="Lompat ke Bulan Ini"
             >
               Hari Ini
             </button>
           </div>
+
+          <div className="hidden md:flex items-center space-x-1.5 text-xs text-slate-400 font-medium">
+            <span>·</span>
+            <span className="text-teal-300 font-semibold">{currentMonthSchedulesCount}</span>
+            <span>jadwal shift dinas</span>
+          </div>
         </div>
 
-        {/* Right: Unified "WhatsApp" & "SHEET" Buttons */}
-        <div className="flex items-center space-x-2">
+        {/* Right: Cloud Status, WhatsApp & Google Sheets Buttons */}
+        <div className="flex items-center space-x-2 sm:space-x-3 ml-auto">
+          {/* Real-time Cloud Status */}
+          <div className="hidden lg:flex items-center space-x-1.5 text-xs font-medium">
+            {syncStatus === 'connected' ? (
+              <span className="flex items-center space-x-1.5 text-emerald-400">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 shadow-2xs"></span>
+                <span>Firestore Cloud Aktif</span>
+              </span>
+            ) : syncStatus === 'connecting' ? (
+              <span className="flex items-center space-x-1.5 text-amber-400">
+                <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
+                <span>Sinkronisasi...</span>
+              </span>
+            ) : (
+              <span className="flex items-center space-x-1.5 text-slate-400">
+                <span className="w-2 h-2 rounded-full bg-slate-500"></span>
+                <span>Mode Offline</span>
+              </span>
+            )}
+          </div>
+
+          <span className="hidden lg:inline text-slate-700">|</span>
+
           {/* Unified WhatsApp Button & Dropdown */}
           <div className="relative">
             <button
@@ -741,17 +776,17 @@ export const HeaderGoogleSheetSync: React.FC<HeaderGoogleSheetSyncProps> = ({
                 setShowWhatsAppMenu(!showWhatsAppMenu);
                 if (showSheetMenu) setShowSheetMenu(false);
               }}
-              className={`h-9 px-3 sm:px-3.5 rounded-xl font-bold text-xs sm:text-[13px] shadow-sm flex items-center space-x-2 transition-all active:scale-95 cursor-pointer border shrink-0 ${
+              className={`h-9 px-3 sm:px-3.5 rounded-xl font-semibold text-xs sm:text-[13px] shadow-xs flex items-center space-x-2 transition-all active:scale-95 cursor-pointer border shrink-0 ${
                 showWhatsAppMenu
-                  ? 'bg-emerald-500 text-slate-950 border-emerald-300 ring-2 ring-emerald-400/40'
-                  : 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-400/50'
+                  ? 'bg-emerald-600 text-white border-emerald-400 shadow-md ring-2 ring-emerald-500/20'
+                  : 'bg-emerald-950/70 hover:bg-emerald-900/80 text-emerald-200 border-emerald-700/60 hover:border-emerald-500'
               }`}
               title="Kirim Pesan & Ringkasan WhatsApp: Kepala Ruang atau Masing-Masing Perawat"
             >
-              <MessageCircle className="w-4 h-4 text-emerald-100 shrink-0" />
+              <MessageCircle className="w-4 h-4 text-emerald-300 shrink-0" />
               <span className="tracking-wide">WhatsApp</span>
               <ChevronDown
-                className={`w-3.5 h-3.5 text-emerald-100 transition-transform duration-150 shrink-0 ${
+                className={`w-3.5 h-3.5 text-emerald-300 transition-transform duration-150 shrink-0 ${
                   showWhatsAppMenu ? 'rotate-180' : ''
                 }`}
               />
@@ -767,7 +802,7 @@ export const HeaderGoogleSheetSync: React.FC<HeaderGoogleSheetSyncProps> = ({
                 />
                 <div
                   id="header-whatsapp-menu-dropdown"
-                  className="absolute right-0 mt-2 w-80 sm:w-96 bg-slate-900 border border-emerald-600/50 rounded-2xl shadow-2xl z-50 text-white py-2.5 animate-in fade-in zoom-in-95 duration-150 backdrop-blur-xl"
+                  className="absolute right-0 mt-2 w-80 sm:w-96 bg-slate-900/98 border border-emerald-600/50 rounded-2xl shadow-2xl z-50 text-white py-2.5 animate-in fade-in zoom-in-95 duration-150 backdrop-blur-xl"
                 >
                   <div className="px-3.5 py-1.5 border-b border-slate-800 flex items-center justify-between">
                     <div className="flex items-center space-x-2">
@@ -834,7 +869,7 @@ export const HeaderGoogleSheetSync: React.FC<HeaderGoogleSheetSyncProps> = ({
             )}
           </div>
 
-          {/* Unified Single "SHEET" Button with Popover / Dropdown Menu */}
+          {/* Unified Single "Google Sheets" Button with Popover / Dropdown Menu */}
           <div className="relative">
             <button
               id="btn-header-sheet-menu"
@@ -843,19 +878,19 @@ export const HeaderGoogleSheetSync: React.FC<HeaderGoogleSheetSyncProps> = ({
                 if (showWhatsAppMenu) setShowWhatsAppMenu(false);
               }}
               disabled={isPulling || isPushing || isBatchSending || isPartialSending}
-              className={`h-9 px-3 sm:px-4 rounded-xl font-bold text-xs sm:text-[13px] shadow-sm flex items-center space-x-2 transition-all active:scale-95 cursor-pointer border shrink-0 ${
+              className={`h-9 px-3 sm:px-3.5 rounded-xl font-semibold text-xs sm:text-[13px] shadow-xs flex items-center space-x-2 transition-all active:scale-95 cursor-pointer border shrink-0 ${
                 showSheetMenu
-                  ? 'bg-emerald-600 text-white border-emerald-400 ring-2 ring-emerald-500/30'
+                  ? 'bg-teal-600 text-white border-teal-400 shadow-md ring-2 ring-teal-500/20'
                   : isConfigured
-                  ? 'bg-gradient-to-r from-emerald-700 to-teal-700 hover:from-emerald-600 hover:to-teal-600 text-white border-emerald-500/40'
-                  : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700'
+                  ? 'bg-teal-950/70 hover:bg-teal-900/80 text-teal-200 border-teal-700/60 hover:border-teal-500'
+                  : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
               }`}
               title="Menu Sinkronisasi Google Sheets: Tarik, Kirim, Sinkronisasi Terarah, Buka Sheet, dan Konfigurasi"
             >
               {isPulling || isPushing || isBatchSending || isPartialSending ? (
-                <RefreshCw className="w-4 h-4 animate-spin text-cyan-200 shrink-0" />
+                <RefreshCw className="w-4 h-4 animate-spin text-teal-300 shrink-0" />
               ) : (
-                <FileSpreadsheet className="w-4 h-4 text-emerald-200 shrink-0" />
+                <FileSpreadsheet className="w-4 h-4 text-teal-300 shrink-0" />
               )}
               <span className="tracking-wide">
                 {isPulling
@@ -866,19 +901,19 @@ export const HeaderGoogleSheetSync: React.FC<HeaderGoogleSheetSyncProps> = ({
                   ? 'Sinkron Terarah...'
                   : isBatchSending
                   ? 'Kirim Batch...'
-                  : 'SHEET'}
+                  : 'Google Sheets'}
               </span>
 
               {/* Connection status indicator dot */}
               <span
                 className={`w-2 h-2 rounded-full shrink-0 ${
-                  isConfigured ? 'bg-emerald-300 animate-pulse' : 'bg-amber-400'
+                  isConfigured ? 'bg-emerald-400' : 'bg-amber-400'
                 }`}
                 title={isConfigured ? 'Google Sheets Siap' : 'Belum Dikonfigurasi'}
               />
 
               <ChevronDown
-                className={`w-3.5 h-3.5 text-emerald-200 transition-transform duration-150 shrink-0 ${
+                className={`w-3.5 h-3.5 text-teal-300 transition-transform duration-150 shrink-0 ${
                   showSheetMenu ? 'rotate-180' : ''
                 }`}
               />

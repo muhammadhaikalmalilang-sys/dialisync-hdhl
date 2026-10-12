@@ -964,12 +964,23 @@ export function applyPulledDataToApp(
             String(e.id) === String(pNurse.id))
       );
 
-      const mappedRole: UserRole =
-        pNurse.role === 'KARU'
-          ? 'kepala_ruangan'
-          : pNurse.role === 'KATIM'
-          ? 'pj_shift'
-          : 'perawat';
+      const existingNurse = existingNurseIdx >= 0 ? updatedEmployees[existingNurseIdx] : undefined;
+      const existingRole = existingNurse ? existingNurse.role : 'perawat';
+
+      let mappedRole: UserRole = 'perawat';
+      if (pNurse.role === 'KARU') {
+        mappedRole = 'kepala_ruangan';
+      } else if (pNurse.role === 'KATIM') {
+        mappedRole = 'pj_shift';
+      } else if (existingRole === 'kepala_ruangan' || existingRole === 'karu') {
+        // Pertahankan jabatan Kepala Ruangan yang sudah diset di aplikasi
+        mappedRole = 'kepala_ruangan';
+      } else if (existingRole === 'pj_shift' || existingRole === 'katim') {
+        // Pertahankan jabatan KATIM / PJ Shift yang sudah diset di aplikasi
+        mappedRole = 'pj_shift';
+      } else if (existingRole === 'admin') {
+        mappedRole = 'admin';
+      }
 
       if (existingNurseIdx >= 0) {
         updatedEmployees[existingNurseIdx] = {

@@ -17,13 +17,57 @@ import { storage, isInvalidNurseAccount, isRecapOrSummaryIdentifier } from './ut
 import { getTodayDateString, getDoctorNickname } from './utils/scheduler';
 import { cloudSync, SyncStatus } from './services/cloudSync';
 import { Navbar } from './components/Navbar';
-import { LoginModal } from './components/LoginModal';
-import { DashboardView } from './components/DashboardView';
-import { ScheduleView } from './components/ScheduleView';
-import { MachineView } from './components/MachineView';
-import { SpecialTasksView } from './components/SpecialTasksView';
-import { EmployeeManagementView } from './components/EmployeeManagementView';
 import { Activity, ShieldCheck, RefreshCw, HeartPulse, Sparkles, AlertTriangle, X } from 'lucide-react';
+
+// Code-splitting via React.lazy for instant initial load & low bundle size
+const LoginModal = React.lazy(() => import('./components/LoginModal').then(m => ({ default: m.LoginModal })));
+const DashboardView = React.lazy(() => import('./components/DashboardView').then(m => ({ default: m.DashboardView })));
+const ScheduleView = React.lazy(() => import('./components/ScheduleView').then(m => ({ default: m.ScheduleView })));
+const MachineView = React.lazy(() => import('./components/MachineView').then(m => ({ default: m.MachineView })));
+const SpecialTasksView = React.lazy(() => import('./components/SpecialTasksView').then(m => ({ default: m.SpecialTasksView })));
+const EmployeeManagementView = React.lazy(() => import('./components/EmployeeManagementView').then(m => ({ default: m.EmployeeManagementView })));
+
+// Sleek clinical workstation skeleton fallback
+const ClinicalViewSkeleton: React.FC = () => (
+  <div className="w-full space-y-4 animate-pulse">
+    <div className="h-28 bg-white/80 rounded-2xl border border-slate-200/80 p-5 flex items-center justify-between shadow-xs">
+      <div className="space-y-2.5">
+        <div className="h-4 w-44 bg-slate-200 rounded-md"></div>
+        <div className="h-6 w-72 bg-slate-200 rounded-lg"></div>
+        <div className="h-3.5 w-96 bg-slate-200 rounded-md"></div>
+      </div>
+      <div className="w-12 h-12 bg-teal-100/60 rounded-xl flex items-center justify-center">
+        <Activity className="w-6 h-6 text-teal-500 animate-spin" />
+      </div>
+    </div>
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div className="h-36 bg-white/80 rounded-2xl border border-slate-200/80 p-4 space-y-3 shadow-xs">
+        <div className="h-4 w-28 bg-slate-200 rounded"></div>
+        <div className="h-8 w-20 bg-slate-200 rounded-lg"></div>
+        <div className="h-10 w-full bg-slate-100 rounded-xl"></div>
+      </div>
+      <div className="h-36 bg-white/80 rounded-2xl border border-slate-200/80 p-4 space-y-3 shadow-xs">
+        <div className="h-4 w-28 bg-slate-200 rounded"></div>
+        <div className="h-8 w-20 bg-slate-200 rounded-lg"></div>
+        <div className="h-10 w-full bg-slate-100 rounded-xl"></div>
+      </div>
+      <div className="h-36 bg-white/80 rounded-2xl border border-slate-200/80 p-4 space-y-3 shadow-xs">
+        <div className="h-4 w-28 bg-slate-200 rounded"></div>
+        <div className="h-8 w-20 bg-slate-200 rounded-lg"></div>
+        <div className="h-10 w-full bg-slate-100 rounded-xl"></div>
+      </div>
+    </div>
+    <div className="h-72 bg-white/80 rounded-2xl border border-slate-200/80 p-5 space-y-4 shadow-xs">
+      <div className="h-5 w-48 bg-slate-200 rounded"></div>
+      <div className="space-y-2.5">
+        <div className="h-9 w-full bg-slate-100 rounded-lg"></div>
+        <div className="h-9 w-full bg-slate-100 rounded-lg"></div>
+        <div className="h-9 w-full bg-slate-100 rounded-lg"></div>
+        <div className="h-9 w-full bg-slate-100 rounded-lg"></div>
+      </div>
+    </div>
+  </div>
+);
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(null);
@@ -200,6 +244,19 @@ export default function App() {
   const handleUpdateEmployees = (newEmployees: UserAccount[]) => {
     const unique = setCleanEmployees(newEmployees);
     storage.saveEmployees(unique);
+    if (currentUser) {
+      const updatedCurrent = unique.find((e) => e.id === currentUser.id);
+      if (
+        updatedCurrent &&
+        (updatedCurrent.role !== currentUser.role ||
+          updatedCurrent.name !== currentUser.name ||
+          updatedCurrent.specialization !== currentUser.specialization ||
+          updatedCurrent.specialDuty !== currentUser.specialDuty)
+      ) {
+        storage.setCurrentUser(updatedCurrent);
+        setCurrentUser(updatedCurrent);
+      }
+    }
     cloudSync.saveEmployees(unique).catch((e) => console.error('[CloudSync] saveEmployees:', e));
   };
 
@@ -249,7 +306,11 @@ export default function App() {
 
   // If no user is logged in, show Login View
   if (!currentUser) {
-    return <LoginModal employees={employees} onLogin={handleLogin} />;
+    return (
+      <React.Suspense fallback={<ClinicalViewSkeleton />}>
+        <LoginModal employees={employees} onLogin={handleLogin} />
+      </React.Suspense>
+    );
   }
 
   return (
@@ -279,99 +340,101 @@ export default function App() {
 
       {/* Main Container */}
       <main className="flex-1 max-w-[1680px] w-full mx-auto px-2.5 sm:px-4 md:px-6 lg:px-8 py-3.5 sm:py-6">
-        {activeTab === 'dashboard' && (
-          <DashboardView
-            currentUser={currentUser}
-            employees={employees}
-            schedules={schedules}
-            machines={machines}
-            machineAssignments={machineAssignments}
-            specialTasks={specialTasks}
-            activeDate={operationalDate}
-            onDateChange={setOperationalDate}
-            onNavigate={(tab) => setActiveTab(tab)}
-            onUpdateSchedule={handleUpdateSchedule}
-            onUpdateEmployees={handleUpdateEmployees}
-            onUpdateTaskStatus={(taskId, status) => {
-              const updated = specialTasks.map((t) =>
-                t.id === taskId
-                  ? {
-                      ...t,
-                      status,
-                      completedAt: status === 'completed' ? new Date().toISOString().substring(0, 16) : undefined,
-                    }
-                  : t
-              );
-              handleUpdateTasks(updated);
-            }}
-            settings={settings}
-            onUpdateSettings={handleUpdateSettings}
-          />
-        )}
+        <React.Suspense fallback={<ClinicalViewSkeleton />}>
+          {activeTab === 'dashboard' && (
+            <DashboardView
+              currentUser={currentUser}
+              employees={employees}
+              schedules={schedules}
+              machines={machines}
+              machineAssignments={machineAssignments}
+              specialTasks={specialTasks}
+              activeDate={operationalDate}
+              onDateChange={setOperationalDate}
+              onNavigate={(tab) => setActiveTab(tab)}
+              onUpdateSchedule={handleUpdateSchedule}
+              onUpdateEmployees={handleUpdateEmployees}
+              onUpdateTaskStatus={(taskId, status) => {
+                const updated = specialTasks.map((t) =>
+                  t.id === taskId
+                    ? {
+                        ...t,
+                        status,
+                        completedAt: status === 'completed' ? new Date().toISOString().substring(0, 16) : undefined,
+                      }
+                    : t
+                );
+                handleUpdateTasks(updated);
+              }}
+              settings={settings}
+              onUpdateSettings={handleUpdateSettings}
+            />
+          )}
 
-        {activeTab === 'jadwal' && (
-          <ScheduleView
-            currentUser={currentUser}
-            employees={employees}
-            schedules={schedules}
-            specialTasks={specialTasks}
-            onUpdateSchedule={handleUpdateSchedule}
-            machines={machines}
-            machineAssignments={machineAssignments}
-            onUpdateMachineAssignments={handleUpdateAssignments}
-            onUpdateSpecialTasks={handleUpdateTasks}
-            settings={settings}
-            onUpdateSettings={handleUpdateSettings}
-          />
-        )}
+          {activeTab === 'jadwal' && (
+            <ScheduleView
+              currentUser={currentUser}
+              employees={employees}
+              schedules={schedules}
+              specialTasks={specialTasks}
+              onUpdateSchedule={handleUpdateSchedule}
+              machines={machines}
+              machineAssignments={machineAssignments}
+              onUpdateMachineAssignments={handleUpdateAssignments}
+              onUpdateSpecialTasks={handleUpdateTasks}
+              settings={settings}
+              onUpdateSettings={handleUpdateSettings}
+            />
+          )}
 
-        {activeTab === 'mesin' && (
-          <MachineView
-            currentUser={currentUser}
-            employees={employees}
-            machines={machines}
-            zones={zones}
-            machineAssignments={machineAssignments}
-            schedules={schedules}
-            specialTasks={specialTasks}
-            activeDate={operationalDate}
-            onDateChange={setOperationalDate}
-            onUpdateMachines={handleUpdateMachines}
-            onUpdateZones={handleUpdateZones}
-            onUpdateAssignments={handleUpdateAssignments}
-          />
-        )}
+          {activeTab === 'mesin' && (
+            <MachineView
+              currentUser={currentUser}
+              employees={employees}
+              machines={machines}
+              zones={zones}
+              machineAssignments={machineAssignments}
+              schedules={schedules}
+              specialTasks={specialTasks}
+              activeDate={operationalDate}
+              onDateChange={setOperationalDate}
+              onUpdateMachines={handleUpdateMachines}
+              onUpdateZones={handleUpdateZones}
+              onUpdateAssignments={handleUpdateAssignments}
+            />
+          )}
 
-        {activeTab === 'tugas' && (
-          <SpecialTasksView
-            currentUser={currentUser}
-            employees={employees}
-            schedules={schedules}
-            specialTasks={specialTasks}
-            settings={settings}
-            activeDate={operationalDate}
-            onDateChange={setOperationalDate}
-            onUpdateTasks={handleUpdateTasks}
-            onUpdateSchedule={handleUpdateSchedule}
-            onNavigate={(tab) => setActiveTab(tab as any)}
-          />
-        )}
+          {activeTab === 'tugas' && (
+            <SpecialTasksView
+              currentUser={currentUser}
+              employees={employees}
+              schedules={schedules}
+              specialTasks={specialTasks}
+              settings={settings}
+              activeDate={operationalDate}
+              onDateChange={setOperationalDate}
+              onUpdateTasks={handleUpdateTasks}
+              onUpdateSchedule={handleUpdateSchedule}
+              onNavigate={(tab) => setActiveTab(tab as any)}
+            />
+          )}
 
-        {activeTab === 'karyawan' && currentUser.role === 'admin' && (
-          <EmployeeManagementView
-            currentUser={currentUser}
-            employees={employees}
-            schedules={schedules}
-            machines={machines}
-            machineAssignments={machineAssignments}
-            specialTasks={specialTasks}
-            settings={settings}
-            onUpdateEmployees={handleUpdateEmployees}
-            onDeleteEmployee={handleDeleteEmployee}
-            onUpdateSchedule={handleUpdateSchedule}
-            onUpdateSettings={handleUpdateSettings}
-          />
-        )}
+          {activeTab === 'karyawan' && currentUser.role === 'admin' && (
+            <EmployeeManagementView
+              currentUser={currentUser}
+              employees={employees}
+              schedules={schedules}
+              machines={machines}
+              machineAssignments={machineAssignments}
+              specialTasks={specialTasks}
+              settings={settings}
+              onUpdateEmployees={handleUpdateEmployees}
+              onDeleteEmployee={handleDeleteEmployee}
+              onUpdateSchedule={handleUpdateSchedule}
+              onUpdateSettings={handleUpdateSettings}
+            />
+          )}
+        </React.Suspense>
       </main>
 
       {/* Global System Toast */}

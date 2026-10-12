@@ -2165,7 +2165,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
             {isNurse && canEdit && (
               <button
                 onClick={() => setShowGenerateModal(true)}
-                className="px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold shadow-2xs flex items-center space-x-1.5 transition"
+                className="px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold shadow-2xs flex items-center space-x-1.5 transition cursor-pointer"
               >
                 <Sparkles className="w-3.5 h-3.5" />
                 <span>Auto-Generate Perawat</span>
@@ -2180,16 +2180,94 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
           </div>
         </div>
 
+        {/* Table Filter & Search Toolbar */}
+        <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2.5 text-xs">
+          {/* Segmented Role Filter Tabs */}
+          <div className="flex items-center gap-1 bg-white p-1 rounded-xl border border-slate-200 shadow-2xs overflow-x-auto scrollbar-none">
+            <button
+              onClick={() => setRoleFilter('all')}
+              className={`px-3 py-1 rounded-lg font-semibold text-xs transition cursor-pointer shrink-0 ${
+                roleFilter === 'all'
+                  ? 'bg-teal-600 text-white shadow-2xs'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+              }`}
+            >
+              Semua Staf
+            </button>
+            <button
+              onClick={() => setRoleFilter('mine')}
+              className={`px-3 py-1 rounded-lg font-semibold text-xs transition cursor-pointer shrink-0 ${
+                roleFilter === 'mine'
+                  ? 'bg-teal-600 text-white shadow-2xs'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+              }`}
+            >
+              Jadwal Saya
+            </button>
+            <button
+              onClick={() => setRoleFilter('kepala_ruangan')}
+              className={`px-3 py-1 rounded-lg font-semibold text-xs transition cursor-pointer shrink-0 ${
+                roleFilter === 'kepala_ruangan'
+                  ? 'bg-teal-600 text-white shadow-2xs'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+              }`}
+            >
+              Kepala Ruang
+            </button>
+            <button
+              onClick={() => setRoleFilter('pj_shift')}
+              className={`px-3 py-1 rounded-lg font-semibold text-xs transition cursor-pointer shrink-0 ${
+                roleFilter === 'pj_shift'
+                  ? 'bg-teal-600 text-white shadow-2xs'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+              }`}
+            >
+              KATIM HD
+            </button>
+            <button
+              onClick={() => setRoleFilter('perawat')}
+              className={`px-3 py-1 rounded-lg font-semibold text-xs transition cursor-pointer shrink-0 ${
+                roleFilter === 'perawat'
+                  ? 'bg-teal-600 text-white shadow-2xs'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+              }`}
+            >
+              Perawat Pelaksana
+            </button>
+          </div>
+
+          {/* Quick Search Input */}
+          <div className="relative flex items-center">
+            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 pointer-events-none" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Cari nama perawat..."
+              className="pl-8 pr-7 py-1.5 bg-white border border-slate-200 rounded-xl text-xs font-medium text-slate-800 placeholder-slate-400 focus:outline-hidden focus:border-teal-500 focus:ring-1 focus:ring-teal-500 w-44 sm:w-56 transition shadow-2xs"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery('')}
+                className="absolute right-2 text-slate-400 hover:text-slate-600 p-0.5 rounded cursor-pointer"
+                title="Hapus pencarian"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        </div>
+
         {/* Matrix Grid */}
         {staffList.length === 0 ? (
           <div className="p-10 text-center">
             <UserCheck className="w-10 h-10 text-slate-300 mx-auto mb-2" />
             <h4 className="text-sm font-bold text-slate-700">
-              {isNurse ? 'Belum ada data perawat untuk ditampilkan' : 'Belum ada data dokter untuk ditampilkan'}
+              {isNurse ? 'Tidak ada data perawat yang sesuai dengan filter' : 'Belum ada data dokter untuk ditampilkan'}
             </h4>
             <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
               {isNurse
-                ? 'Tambahkan data perawat melalui menu Manajemen Karyawan untuk mulai menyusun jadwal shift.'
+                ? 'Coba ganti filter peran atau kosongkan kotak pencarian nama perawat.'
                 : 'Tambahkan data dokter spesialis atau dokter jaga melalui menu Manajemen Karyawan untuk mengatur dinas jaga.'}
             </p>
           </div>
@@ -2198,7 +2276,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
             <table className="w-full text-left border-collapse text-xs">
               <thead className="sticky top-0 bg-slate-50 border-b border-slate-200 z-20">
                 <tr>
-                  <th className="p-3 font-bold text-slate-700 bg-slate-100/95 border-r border-slate-200 min-w-[210px] sticky left-0 z-30">
+                  <th className="p-3 font-bold text-slate-700 bg-slate-100/95 border-r border-slate-200 min-w-[210px] sticky left-0 z-30 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.06)]">
                     <div className="flex items-center space-x-2">
                       <span className="w-6 text-center text-slate-500 font-bold text-[11px]">No</span>
                       <span>Nama {isNurse ? 'Perawat' : 'Dokter'} &amp; Jabatan</span>
@@ -2264,12 +2342,12 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                   return (
                     <tr
                       key={emp.id}
-                      className={`hover:bg-teal-50/20 transition ${
-                        isCurrent ? 'bg-teal-50/40' : ''
+                      className={`hover:bg-teal-50/30 transition-colors group ${
+                        isCurrent ? 'bg-teal-50/40' : idx % 2 === 1 ? 'bg-slate-50/30' : 'bg-white'
                       }`}
                     >
                       {/* Fixed Staff Column */}
-                      <td className="p-2.5 border-r border-slate-200 bg-white sticky left-0 z-10 font-medium">
+                      <td className="p-2.5 border-r border-slate-200 bg-white sticky left-0 z-10 font-medium group-hover:bg-teal-50/20 transition-colors shadow-[2px_0_4px_-2px_rgba(0,0,0,0.06)]">
                         <div className="flex items-center space-x-2.5">
                           <div
                             className="w-6 h-6 rounded-md font-extrabold flex items-center justify-center text-[10px] text-white shrink-0 shadow-2xs bg-teal-600"
